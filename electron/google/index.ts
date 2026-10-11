@@ -1,0 +1,11 @@
+export { GoogleSyncService, GOOGLE_CHANNELS } from './service';
+export type { GoogleSyncServiceOptions } from './service';
+export { SyncEngine } from './syncEngine';
+export type { SyncOnceOptions } from './syncEngine';
+export { SyncStateStore, migrateState } from './state';
+export { TokenStore, resolveClientConfig, saveClientConfig, clearClientConfig, isValidClientId, GOOGLE_SCOPES, plainCipher } from './credentials';
+export type { AuthTokens, Cipher, OAuthClientConfig } from './credentials';
+export { GoogleCalendarApi, GoogleApiError } from './api';
+export { OAuthFlow, OAuthError, refreshTokens, revokeToken } from './oauth';
+export { appendDiagLine, readDiagTail, redactSecrets, diagLogPath } from './diagnostics';
+export * from './types';

@@ -1,0 +1,2349 @@
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { 
+  Calendar as CalendarIcon, ChevronLeft, ChevronRight, Plus, Play, Trash2, 
+  Clock, CheckCircle2, ArrowLeft, Download, RefreshCw, Sparkles, X, Edit3,
+  CalendarCheck, ListPlus, Flame, MoveRight, PanelLeft, Check, FolderSync,
+  Layers, Target, FileText
+} from 'lucide-react';
+import { StudyMode, ThemeId, ScheduleBlock, DayPlan, GoogleCalendarConfig, TaskItem, ObsidianConfig } from '../types';
+import { THEMES } from '../styles/themes';
+import { DynamicIcon } from './DynamicIcon';
+import { obsidianService } from '../services/obsidian';
+import { plannerMd } from '../services/plannerMarkdown';
+import { buildDayScheduleSection } from '../services/scheduleTemplates';
+import { stripDateSuffix } from '../services/taskTitles';
+import {
+  DRAG_THRESHOLD_PX,
+  applyMoveToList,
+  createRange,
+  hhmmToMinutes,
+  layoutOverlappingBlocks,
+  makeCopy,
+  minutesToHHMM,
+  minutesToY,
+  moveRange,
+  nextSharedHorizon,
+  resizeRange,
+  resizeStartRange,
+  snapMinutes,
+  toLocalDateStr,
+} from '../services/calendarGrid';
+import { useGoogleSyncStatus } from '../services/googleSync';
+import { DayPlanMarkdownView } from './DayPlanMarkdownView';
+
+interface PlannerViewProps {
+  modes: StudyMode[];
+  plans: Record<string, DayPlan>;
+  tasks?: TaskItem[];
+  obsidianConfig?: ObsidianConfig;
+  onSavePlan: (date: string, plan: DayPlan) => void;
+  onStartBlockInTimer: (mode: StudyMode, block: ScheduleBlock) => void;
+  onBackToLauncher: () => void;
+  onOpenSettings?: () => void;
+  onAddTask?: (title: string, modeId?: string) => TaskItem;
+  calendarConfig: GoogleCalendarConfig;
+  onUpdateCalendarConfig: (config: GoogleCalendarConfig) => void;
+  theme: ThemeId;
+  onObsidianSynced?: (at: string) => void;
+}
+
+/** Fields mirrored to Google Calendar — used to detect real block edits. */
+function calendarFieldsUnchanged(a: ScheduleBlock, b: ScheduleBlock): boolean {
+  return (
+    (a.modeName || '') === (b.modeName || '') &&
+    a.date === b.date &&
+    a.startTime === b.startTime &&
+    a.endTime === b.endTime &&
+    !!a.allDay === !!b.allDay &&
+    (a.description || '') === (b.description || '') &&
+    (a.location || '') === (b.location || '')
+  );
+}
+
+// Format 24h HH:mm to Apple-style 12h "9 AM" or "9:30 AM"
+function formatTime12h(timeStr: string): string {
+  if (!timeStr) return '';
+  const [hStr, mStr] = timeStr.split(':');
+  const h = parseInt(hStr, 10);
+  const m = parseInt(mStr || '0', 10);
+  const period = h >= 12 ? 'PM' : 'AM';
+  const displayH = h % 12 === 0 ? 12 : h % 12;
+  return m === 0 ? `${displayH} ${period}` : `${displayH}:${String(m).padStart(2, '0')} ${period}`;
+}
+
+function formatTimeRange12h(startTime: string, endTime: string): string {
+  return `${formatTime12h(startTime)} – ${formatTime12h(endTime)}`;
+}
+
+export const PlannerView: React.FC<PlannerViewProps> = ({
+  modes,
+  plans,
+  tasks = [],
+  obsidianConfig,
+  onSavePlan,
+  onStartBlockInTimer,
+  onBackToLauncher,
+  onOpenSettings,
+  onAddTask,
+  calendarConfig,
+  onUpdateCalendarConfig,
+  theme,
+  onObsidianSynced,
+}) => {
+  const currentTheme = THEMES[theme] || THEMES.serika;
+  const isDark = currentTheme.isDark;
+
+  // Grid time limits: 06:00 AM to 23:00 PM (18 hours)
+  const START_HOUR = 6;
+  const END_HOUR = 23;
+  // Vertical zoom: pixels per hour slot. Cmd/Ctrl + scroll (or a trackpad
+  // pinch) over the grid scales this value, growing the time ruler on the left
+  // and every event card with it.
+  const HOUR_HEIGHT_MIN = 36;
+  const HOUR_HEIGHT_MAX = 220;
+  const HOUR_HEIGHT_DEFAULT = 68;
+  const [hourHeight, setHourHeight] = useState<number>(HOUR_HEIGHT_DEFAULT);
+  const hourHeightRef = useRef<number>(HOUR_HEIGHT_DEFAULT);
+  hourHeightRef.current = hourHeight;
+  const pendingScrollTopRef = useRef<number | null>(null);
+  const smoothRestoreRef = useRef<number | null>(null);
+  // While a zoom gesture is in flight, geometry transitions are suppressed so
+  // the ruler, cards and current-time line track the cursor 1:1 instead of
+  // easing behind it and only settling once the gesture ends.
+  const [isZooming, setIsZooming] = useState(false);
+  const TOTAL_HOURS = END_HOUR - START_HOUR;
+  // Horizontal breathing room for overlapping event columns (Apple Calendar
+  // packs them tightly). Day view has more room than the narrow week columns.
+  const DAY_EVENT_GAP_PX = 3;
+  const WEEK_EVENT_GAP_PX = 2;
+  // Readable minimum card height for *isolated* short events. It is only a
+  // floor: a card is never allowed to grow past the next event that shares its
+  // horizontal space, so packed short events stay inside their real slot.
+  const DAY_MIN_EVENT_HEIGHT = 24;
+  const WEEK_MIN_EVENT_HEIGHT = 20;
+
+  const todayStr = useMemo(() => toLocalDateStr(new Date()), []);
+  const [selectedDate, setSelectedDate] = useState<string>(todayStr);
+
+  // View switch: 'day', 'week', or 'plan' (Markdown day plan)
+  const [calendarView, setCalendarView] = useState<'day' | 'week' | 'plan'>('day');
+
+  // Sidebar visibility toggle
+  const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
+
+  // Focus Modes checklist filter (Apple Calendar sidebar style)
+  const [enabledModeIds, setEnabledModeIds] = useState<Set<string>>(
+    () => new Set(modes.map((m) => m.id))
+  );
+
+  // Keep enabledModeIds in sync if modes list changes
+  useEffect(() => {
+    setEnabledModeIds((prev) => {
+      const next = new Set(prev);
+      modes.forEach((m) => {
+        if (!prev.has(m.id)) next.add(m.id);
+      });
+      return next;
+    });
+  }, [modes]);
+
+  const toggleModeFilter = (modeId: string) => {
+    setEnabledModeIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(modeId)) {
+        if (next.size > 1) next.delete(modeId);
+      } else {
+        next.add(modeId);
+      }
+      return next;
+    });
+  };
+
+  // Live real-time clock for Apple red current-time marker
+  const [now, setNow] = useState<Date>(new Date());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 30000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const existingPlan = plans[selectedDate];
+  const [blocks, setBlocks] = useState<ScheduleBlock[]>(existingPlan?.blocks || []);
+  const [syncFeedback, setSyncFeedback] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+
+  // Google Calendar sync chip (status lives in the main process)
+  const googleStatus = useGoogleSyncStatus();
+  const showGoogleChip =
+    googleStatus.available && (googleStatus.connected || googleStatus.phase === 'connecting');
+  const googleChip: { label: string; color: string; spin: boolean } | null = !showGoogleChip
+    ? null
+    : googleStatus.syncing || googleStatus.phase === 'connecting'
+      ? { label: 'Syncing…', color: '#38bdf8', spin: true }
+      : googleStatus.phase === 'auth_required'
+        ? { label: 'Reconnect', color: '#f59e0b', spin: false }
+        : googleStatus.phase === 'offline'
+          ? { label: 'Offline', color: '#94a3b8', spin: false }
+          : googleStatus.phase === 'error' || googleStatus.pendingOps > 0
+            ? { label: 'Sync issue', color: '#f87171', spin: false }
+            : { label: 'Synced', color: '#34d399', spin: false };
+  const [isObsidianSyncing, setIsObsidianSyncing] = useState<boolean>(false);
+
+  // Mini Month Calendar state (for left sidebar)
+  const [miniCalendarMonth, setMiniCalendarMonth] = useState<Date>(() => new Date(selectedDate + 'T00:00:00'));
+
+  // Modal states for Add / Edit Focus Block (Apple event inspector sheet)
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
+  const [blockTitle, setBlockTitle] = useState('');
+  const [blockDate, setBlockDate] = useState(selectedDate);
+  const [blockStartTime, setBlockStartTime] = useState('09:00');
+  const [blockEndTime, setBlockEndTime] = useState('10:00');
+  const [blockModeId, setBlockModeId] = useState<string>(modes[0]?.id || 'mode-deep-work');
+  const [blockCycles, setBlockCycles] = useState<number>(1);
+  const [selectedTaskId, setSelectedTaskId] = useState<string>('');
+
+  // Auto-scroll calendar grid to 8:00 AM or current time on mount
+  const gridScrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (gridScrollRef.current) {
+      const currentH = new Date().getHours();
+      const targetH = Math.max(START_HOUR, Math.min(END_HOUR - 4, currentH - 1));
+      const scrollPos = (targetH - START_HOUR) * hourHeightRef.current;
+      gridScrollRef.current.scrollTop = scrollPos;
+    }
+  }, [calendarView]);
+
+  // Zoom the time grid with Cmd/Ctrl + scroll (macOS trackpad pinch also
+  // arrives as wheel + ctrlKey). The time under the pointer stays anchored.
+  useEffect(() => {
+    const el = gridScrollRef.current;
+    if (!el) return;
+
+    const handleZoomWheel = (e: WheelEvent) => {
+      if (!e.metaKey && !e.ctrlKey) return;
+      e.preventDefault();
+
+      const oldHeight = hourHeightRef.current;
+      const factor = Math.exp(-e.deltaY * 0.0015);
+      const nextHeight = Math.max(
+        HOUR_HEIGHT_MIN,
+        Math.min(HOUR_HEIGHT_MAX, Math.round(oldHeight * factor)),
+      );
+      if (nextHeight === oldHeight) return;
+
+      const rect = el.getBoundingClientRect();
+      const pointerY = e.clientY - rect.top;
+      // Disable smooth scrolling while zooming so the anchor stays exact, and
+      // silence geometry transitions so nothing eases behind the cursor. Both
+      // are restored shortly after the gesture stops.
+      setIsZooming(true);
+      el.style.scrollBehavior = 'auto';
+      if (smoothRestoreRef.current !== null) window.clearTimeout(smoothRestoreRef.current);
+      smoothRestoreRef.current = window.setTimeout(() => {
+        el.style.scrollBehavior = '';
+        smoothRestoreRef.current = null;
+        setIsZooming(false);
+      }, 200);
+      // Absolute minute value currently sitting under the pointer.
+      const minutes = START_HOUR * 60 + ((el.scrollTop + pointerY) / oldHeight) * 60;
+      // Where that same minute lands after the resize — scroll so it stays put.
+      const nextContentY = ((minutes - START_HOUR * 60) / 60) * nextHeight;
+      pendingScrollTopRef.current = nextContentY - pointerY;
+
+      hourHeightRef.current = nextHeight;
+      setHourHeight(nextHeight);
+    };
+
+    el.addEventListener('wheel', handleZoomWheel, { passive: false });
+    return () => el.removeEventListener('wheel', handleZoomWheel);
+  }, []);
+
+  // Apply the anchored scroll position in the same frame the zoomed layout is
+  // committed (before paint) so there is no one-frame jump.
+  useLayoutEffect(() => {
+    if (pendingScrollTopRef.current !== null && gridScrollRef.current) {
+      gridScrollRef.current.scrollTop = pendingScrollTopRef.current;
+      pendingScrollTopRef.current = null;
+    }
+  }, [hourHeight]);
+
+  // Sync state when selectedDate changes
+  useEffect(() => {
+    const p = plans[selectedDate];
+    setBlocks(p?.blocks || []);
+    setMiniCalendarMonth(new Date(selectedDate + 'T00:00:00'));
+  }, [selectedDate, plans]);
+
+  // Persist blocks for a specific date to DayPlan.
+  // Blocks whose calendar-relevant content changed get a fresh updatedAt —
+  // the Google Calendar sync engine uses it to decide when a historical
+  // (pre-connect) event was explicitly edited by the user.
+  const persistBlocksForDate = (date: string, updatedBlocks: ScheduleBlock[]) => {
+    const plan = plans[date];
+    const prevBlocks = plan?.blocks || (date === selectedDate ? blocks : []);
+    const prevById = new Map(prevBlocks.map((b) => [b.id, b]));
+    const nowIso = new Date().toISOString();
+    const stampedBlocks = updatedBlocks.map((b) => {
+      const prev = prevById.get(b.id);
+      if (prev && calendarFieldsUnchanged(prev, b)) return b;
+      return {
+        ...b,
+        createdAt: prev?.createdAt ?? b.createdAt ?? nowIso,
+        updatedAt: nowIso,
+      };
+    });
+    const updatedPlan: DayPlan = {
+      date,
+      goals: plan?.goals || [],
+      timeWindows: plan?.timeWindows || [],
+      blocks: stampedBlocks,
+      isApproved: true,
+      updatedAt: nowIso,
+    };
+    if (date === selectedDate) {
+      setBlocks(stampedBlocks);
+    }
+    onSavePlan(date, updatedPlan);
+  };
+
+  // ── Drag & drop (move / resize / create / Alt-copy) ──────────────────────
+  // Pointer-based: press-and-hold slightly, then drag. A plain click (no
+  // movement) keeps its existing behavior (open the editor). Commits go
+  // through persistBlocksForDate, so timestamps and Google sync behave like
+  // manual edits; cross-day moves keep the block id, so sync mappings survive.
+  interface DragPreviewState {
+    mode: 'move' | 'resize' | 'resize-start' | 'create';
+    blockId?: string;
+    date: string;
+    start: number; // minutes since midnight
+    end: number;
+    title: string;
+    altCopy: boolean;
+  }
+  interface DragSession {
+    mode: 'move' | 'resize' | 'resize-start' | 'create';
+    block: ScheduleBlock | null;
+    origDate: string;
+    origStart: number;
+    origEnd: number;
+    anchorStart: number; // snapped minutes at pointerdown (create mode)
+    grabOffset: number; // pointer minutes minus block top at grab (move mode)
+    startX: number;
+    startY: number;
+    active: boolean;
+  }
+  const dragRef = useRef<DragSession | null>(null);
+  const [dragPreview, setDragPreview] = useState<DragPreviewState | null>(null);
+  const suppressClickUntil = useRef(0);
+  const dayEventsRef = useRef<HTMLDivElement | null>(null);
+  const weekEventsRef = useRef<HTMLDivElement | null>(null);
+  // Cleanup for the exact listeners installed at dragstart (they close over
+  // that render). Runs on drop/cancel and on unmount mid-drag.
+  const dragCleanupRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    return () => {
+      dragRef.current = null;
+      dragCleanupRef.current();
+    };
+  }, []);
+  // Fresh-state mirrors: window listeners installed at dragstart close over
+  // one render, so commits read through refs instead of stale closures.
+  const plansRef = useRef(plans);
+  plansRef.current = plans;
+  const blocksRef = useRef(blocks);
+  blocksRef.current = blocks;
+  const selectedDateRef = useRef(selectedDate);
+  selectedDateRef.current = selectedDate;
+  const persistRef = useRef(persistBlocksForDate);
+  persistRef.current = persistBlocksForDate;
+
+  const suppressClick = () => {
+    suppressClickUntil.current = Date.now() + 350;
+  };
+  const isClickSuppressed = () => Date.now() < suppressClickUntil.current;
+
+  const minutesFromClientY = (clientY: number): number | null => {
+    const el = calendarView === 'week' ? weekEventsRef.current : dayEventsRef.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    return START_HOUR * 60 + ((clientY - rect.top) / hourHeightRef.current) * 60;
+  };
+
+  const dateFromClientX = (clientX: number): string | null => {
+    if (calendarView !== 'week') return selectedDateRef.current;
+    const el = weekEventsRef.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0) return null;
+    const idx = Math.max(0, Math.min(6, Math.floor(((clientX - rect.left) / rect.width) * 7)));
+    return weekDaysInfo[idx]?.dateStr ?? null;
+  };
+
+  const detachDragListeners = () => {
+    dragCleanupRef.current();
+    dragCleanupRef.current = () => {};
+  };
+
+  const commitMove = (
+    block: ScheduleBlock,
+    toDate: string,
+    start: number,
+    end: number,
+    altCopy: boolean
+  ) => {
+    const startTime = minutesToHHMM(start);
+    const endTime = minutesToHHMM(end);
+    const persist = persistRef.current;
+    const currentPlans = plansRef.current;
+    const selDate = selectedDateRef.current;
+    if (altCopy) {
+      const copy = makeCopy(
+        block,
+        toDate,
+        startTime,
+        endTime,
+        () => `block-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`
+      );
+      const target = currentPlans[toDate]?.blocks || (toDate === selDate ? blocksRef.current : []);
+      persist(toDate, [...target, copy]);
+      return;
+    }
+    if (toDate === block.date) {
+      const list = currentPlans[block.date]?.blocks || [];
+      if (!list.some((b) => b.id === block.id)) return;
+      persist(block.date, applyMoveToList(list, block.id, startTime, endTime));
+    } else {
+      const src = currentPlans[block.date]?.blocks || [];
+      if (!src.some((b) => b.id === block.id)) return;
+      persist(block.date, src.filter((b) => b.id !== block.id));
+      const target = currentPlans[toDate]?.blocks || [];
+      persist(toDate, [...target, { ...block, date: toDate, startTime, endTime }]);
+    }
+  };
+
+  const commitResize = (block: ScheduleBlock, end: number) => {
+    const currentPlans = plansRef.current;
+    const list = currentPlans[block.date]?.blocks || [];
+    if (!list.some((b) => b.id === block.id)) return;
+    persistRef.current(
+      block.date,
+      list.map((b) => (b.id === block.id ? { ...b, endTime: minutesToHHMM(end) } : b))
+    );
+  };
+
+  const commitResizeStart = (block: ScheduleBlock, start: number) => {
+    const currentPlans = plansRef.current;
+    const list = currentPlans[block.date]?.blocks || [];
+    if (!list.some((b) => b.id === block.id)) return;
+    persistRef.current(
+      block.date,
+      list.map((b) => (b.id === block.id ? { ...b, startTime: minutesToHHMM(start) } : b))
+    );
+  };
+
+  const openRangeModal = (date: string, start: number, end: number) => {
+    setEditingBlockId(null);
+    setBlockTitle('');
+    setBlockDate(date);
+    setBlockStartTime(minutesToHHMM(start));
+    setBlockEndTime(minutesToHHMM(end));
+    setBlockModeId(modes[0]?.id || 'mode-deep-work');
+    setBlockCycles(1);
+    setSelectedTaskId('');
+    setIsEditModalOpen(true);
+  };
+
+  const handleDragMove = (e: PointerEvent) => {
+    const s = dragRef.current;
+    if (!s) return;
+    const dx = e.clientX - s.startX;
+    const dy = e.clientY - s.startY;
+    if (!s.active) {
+      if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
+      s.active = true;
+      document.body.style.userSelect = 'none';
+    }
+    const raw = minutesFromClientY(e.clientY);
+    if (raw === null) return;
+    const snapped = snapMinutes(raw);
+    if (s.mode === 'move' && s.block) {
+      const date = dateFromClientX(e.clientX) || s.origDate;
+      const moved = moveRange(s.origStart, s.origEnd, snapped - s.grabOffset - s.origStart);
+      const altCopy = e.altKey;
+      document.body.style.cursor = altCopy ? 'copy' : 'grabbing';
+      setDragPreview({
+        mode: 'move',
+        blockId: s.block.id,
+        date,
+        start: moved.start,
+        end: moved.end,
+        title: s.block.modeName,
+        altCopy,
+      });
+    } else if (s.mode === 'resize' && s.block) {
+      document.body.style.cursor = 'ns-resize';
+      setDragPreview({
+        mode: 'resize',
+        blockId: s.block.id,
+        date: s.origDate,
+        start: s.origStart,
+        end: resizeRange(s.origStart, snapped),
+        title: s.block.modeName,
+        altCopy: false,
+      });
+    } else if (s.mode === 'resize-start' && s.block) {
+      document.body.style.cursor = 'ns-resize';
+      setDragPreview({
+        mode: 'resize-start',
+        blockId: s.block.id,
+        date: s.origDate,
+        start: resizeStartRange(s.origEnd, snapped),
+        end: s.origEnd,
+        title: s.block.modeName,
+        altCopy: false,
+      });
+    } else if (s.mode === 'create') {
+      document.body.style.cursor = 'crosshair';
+      const date = dateFromClientX(e.clientX) || s.origDate;
+      const r = createRange(s.anchorStart, snapped);
+      setDragPreview({ mode: 'create', date, start: r.start, end: r.end, title: '', altCopy: false });
+    }
+  };
+
+  const handleDragEnd = (e: PointerEvent) => {
+    const s = dragRef.current;
+    dragRef.current = null;
+    detachDragListeners();
+    setDragPreview(null);
+    if (!s || !s.active) return; // plain click — existing onClick handles it
+    suppressClick();
+    if (s.mode === 'create') {
+      const raw = minutesFromClientY(e.clientY);
+      if (raw === null) return;
+      const r = createRange(s.anchorStart, snapMinutes(raw));
+      const date = dateFromClientX(e.clientX) || s.origDate;
+      openRangeModal(date, r.start, r.end);
+      return;
+    }
+    if (!s.block) return;
+    const raw = minutesFromClientY(e.clientY);
+    if (raw === null) return;
+    const snapped = snapMinutes(raw);
+    if (s.mode === 'move') {
+      const date = dateFromClientX(e.clientX) || s.origDate;
+      const moved = moveRange(s.origStart, s.origEnd, snapped - s.grabOffset - s.origStart);
+      commitMove(s.block, date, moved.start, moved.end, e.altKey);
+    } else if (s.mode === 'resize-start') {
+      commitResizeStart(s.block, resizeStartRange(s.origEnd, snapped));
+    } else {
+      commitResize(s.block, resizeRange(s.origStart, snapped));
+    }
+  };
+
+  const handleDragCancel = () => {
+    dragRef.current = null;
+    detachDragListeners();
+    setDragPreview(null);
+    suppressClick();
+  };
+
+  const handleDragKey = (e: KeyboardEvent) => {
+    if (e.key === 'Escape' && dragRef.current) {
+      e.stopPropagation();
+      handleDragCancel();
+    }
+  };
+
+  const beginDrag = (
+    e: React.PointerEvent,
+    session: Omit<DragSession, 'startX' | 'startY' | 'active' | 'grabOffset' | 'anchorStart'> & {
+      grabOffset?: number;
+      anchorStart?: number;
+    }
+  ) => {
+    if (e.pointerType === 'touch') return; // touch keeps native scroll
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    dragRef.current = {
+      ...session,
+      startX: e.clientX,
+      startY: e.clientY,
+      active: false,
+      grabOffset: session.grabOffset ?? 0,
+      anchorStart: session.anchorStart ?? 0,
+    };
+    window.addEventListener('pointermove', handleDragMove);
+    window.addEventListener('pointerup', handleDragEnd);
+    window.addEventListener('pointercancel', handleDragCancel);
+    window.addEventListener('keydown', handleDragKey, true);
+    dragCleanupRef.current = () => {
+      window.removeEventListener('pointermove', handleDragMove);
+      window.removeEventListener('pointerup', handleDragEnd);
+      window.removeEventListener('pointercancel', handleDragCancel);
+      window.removeEventListener('keydown', handleDragKey, true);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  };
+
+  const startCardDrag = (e: React.PointerEvent, block: ScheduleBlock, mode: 'move' | 'resize' | 'resize-start') => {
+    const raw = minutesFromClientY(e.clientY);
+    beginDrag(e, {
+      mode,
+      block,
+      origDate: block.date,
+      origStart: hhmmToMinutes(block.startTime),
+      origEnd: hhmmToMinutes(block.endTime),
+      grabOffset: mode === 'move' && raw !== null ? raw - hhmmToMinutes(block.startTime) : 0,
+    });
+  };
+
+  const startCreateDrag = (e: React.PointerEvent, date: string) => {
+    const raw = minutesFromClientY(e.clientY);
+    if (raw === null) return;
+    beginDrag(e, {
+      mode: 'create',
+      block: null,
+      origDate: date,
+      origStart: 0,
+      origEnd: 0,
+      anchorStart: snapMinutes(raw),
+    });
+  };
+
+  // Date Navigation Helpers (local calendar dates — never UTC serialization,
+  // which shifts the day for UTC± timezones)
+  const handlePrevDay = () => {
+    if (calendarView === 'day') {
+      const d = new Date(selectedDate + 'T00:00:00');
+      d.setDate(d.getDate() - 1);
+      setSelectedDate(toLocalDateStr(d));
+    } else {
+      const d = new Date(selectedDate + 'T00:00:00');
+      d.setDate(d.getDate() - 7);
+      setSelectedDate(toLocalDateStr(d));
+    }
+  };
+
+  const handleNextDay = () => {
+    if (calendarView === 'day') {
+      const d = new Date(selectedDate + 'T00:00:00');
+      d.setDate(d.getDate() + 1);
+      setSelectedDate(toLocalDateStr(d));
+    } else {
+      const d = new Date(selectedDate + 'T00:00:00');
+      d.setDate(d.getDate() + 7);
+      setSelectedDate(toLocalDateStr(d));
+    }
+  };
+
+  const handleToday = () => {
+    setSelectedDate(todayStr);
+  };
+
+  // Apple-formatted date representations
+  const selectedDateObj = useMemo(() => new Date(selectedDate + 'T00:00:00'), [selectedDate]);
+  
+  const formattedDayOfWeek = useMemo(() => {
+    return selectedDateObj.toLocaleDateString('en-US', { weekday: 'long' });
+  }, [selectedDateObj]);
+
+  const formattedMonthDay = useMemo(() => {
+    return selectedDateObj.toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
+  }, [selectedDateObj]);
+
+  const formattedYear = useMemo(() => {
+    return selectedDateObj.getFullYear();
+  }, [selectedDateObj]);
+
+  const monthShort = useMemo(() => {
+    return selectedDateObj.toLocaleDateString('en-US', { month: 'short' }).toUpperCase();
+  }, [selectedDateObj]);
+
+  const dayNumber = useMemo(() => {
+    return selectedDateObj.getDate();
+  }, [selectedDateObj]);
+
+  const isSelectedToday = selectedDate === todayStr;
+
+  // Calculate 7 days for the active week view (Monday to Sunday)
+  const weekDaysInfo = useMemo(() => {
+    const d = new Date(selectedDate + 'T00:00:00');
+    const day = d.getDay();
+    const diffToMonday = (day === 0 ? -6 : 1) - day;
+    const monday = new Date(d);
+    monday.setDate(d.getDate() + diffToMonday);
+
+    const labels = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+    return Array.from({ length: 7 }, (_, i) => {
+      const cur = new Date(monday);
+      cur.setDate(monday.getDate() + i);
+      const curDateStr = toLocalDateStr(cur);
+      return {
+        dateStr: curDateStr,
+        dayName: labels[i],
+        dayNum: cur.getDate(),
+        isToday: curDateStr === todayStr,
+        isSelected: curDateStr === selectedDate,
+      };
+    });
+  }, [selectedDate, todayStr]);
+
+  // Calculate position of the live current-time indicator line (Apple Red).
+  // Uses minutesToY — the exact same coordinate system as event cards and the
+  // drag ghost — so the line always agrees with event edges.
+  const currentAbsMinutes = now.getHours() * 60 + now.getMinutes();
+  const showCurrentTimeLine = now.getHours() >= START_HOUR && now.getHours() < END_HOUR;
+  const currentTimeLineTop = minutesToY(currentAbsMinutes, START_HOUR, hourHeight);
+
+  // Open Add Block pre-filled with clicked hour & date
+  const handleSlotClick = (hour: number, minute: number = 0, targetDate: string = selectedDate) => {
+    if (isClickSuppressed()) return; // a drag just ended here
+    openRangeModal(targetDate, hour * 60 + minute, Math.min(END_HOUR, hour + 1) * 60 + minute);
+  };
+
+  // Open Edit existing block
+  const handleEditBlock = (block: ScheduleBlock, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (isClickSuppressed()) return; // a drag just ended here
+    setEditingBlockId(block.id);
+    setBlockTitle(block.modeName || '');
+    setBlockDate(block.date || selectedDate);
+    setBlockStartTime(block.startTime);
+    setBlockEndTime(block.endTime);
+    setBlockModeId(block.modeId);
+    setBlockCycles(block.cycles || 1);
+    setSelectedTaskId('');
+    setIsEditModalOpen(true);
+  };
+
+  // Save new or edited block
+  const handleSaveModalBlock = () => {
+    const chosenMode = modes.find((m) => m.id === blockModeId) || modes[0];
+    const [sH, sM] = blockStartTime.split(':').map(Number);
+    const [eH, eM] = blockEndTime.split(':').map(Number);
+    const durationMins = Math.max(15, (eH * 60 + eM) - (sH * 60 + sM));
+
+    const finalTitle = blockTitle.trim() || chosenMode.name;
+    const targetDate = blockDate || selectedDate;
+    const datePlan = plans[targetDate];
+    const targetDateBlocks = datePlan?.blocks || (targetDate === selectedDate ? blocks : []);
+
+    if (editingBlockId) {
+      // Update existing block
+      const updated = targetDateBlocks.map((b) => {
+        if (b.id === editingBlockId) {
+          return {
+            ...b,
+            date: targetDate,
+            startTime: blockStartTime,
+            endTime: blockEndTime,
+            modeId: chosenMode.id,
+            modeName: finalTitle,
+            modeIcon: chosenMode.icon,
+            modeColor: chosenMode.color,
+            workDuration: Math.round(durationMins * 0.8),
+            breakDuration: Math.round(durationMins * 0.2),
+            cycles: blockCycles,
+          };
+        }
+        return b;
+      });
+      persistBlocksForDate(targetDate, updated);
+    } else {
+      // Create new block
+      const newBlock: ScheduleBlock = {
+        id: `block-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        date: targetDate,
+        startTime: blockStartTime,
+        endTime: blockEndTime,
+        modeId: chosenMode.id,
+        modeName: finalTitle,
+        modeIcon: chosenMode.icon,
+        modeColor: chosenMode.color,
+        workDuration: Math.round(durationMins * 0.8),
+        breakDuration: Math.round(durationMins * 0.2),
+        cycles: blockCycles,
+        status: 'approved',
+      };
+      persistBlocksForDate(targetDate, [...targetDateBlocks, newBlock]);
+
+      // Also create a corresponding task so the event is tracked in the task queue
+      if (onAddTask) {
+        onAddTask(finalTitle, chosenMode.id);
+      }
+    }
+
+    setIsEditModalOpen(false);
+  };
+
+  const handleDeleteBlock = (block: ScheduleBlock, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const targetDate = block.date || selectedDate;
+    const datePlan = plans[targetDate];
+    const targetDateBlocks = datePlan?.blocks || (targetDate === selectedDate ? blocks : []);
+    const updated = targetDateBlocks.filter((b) => b.id !== block.id);
+    persistBlocksForDate(targetDate, updated);
+    if (editingBlockId === block.id) setIsEditModalOpen(false);
+  };
+
+  /**
+   * Persist template-generated sessions as ordinary Day Planner events.
+   *
+   * Goes through `persistBlocksForDate` (fresh timestamps for new ids) and
+   * `onSavePlan`, so Google Calendar sync picks the sessions up exactly like
+   * hand-created events — no parallel sync path. Afterwards the schedule is
+   * recorded in the Obsidian daily note (best-effort: the events are already
+   * safe even if the note update fails).
+   */
+  const handleGenerateSchedule = async (
+    date: string,
+    newBlocks: ScheduleBlock[],
+    meta: { templateName: string; templateTitle: string; mode?: 'add' | 'replace' }
+  ): Promise<string | null> => {
+    try {
+      const datePlan = plans[date];
+      const existing = datePlan?.blocks || (date === selectedDate ? blocks : []);
+      const replacing = meta.mode === 'replace';
+      // One persist call either way: validation already passed, so a partial
+      // schedule can never be left behind.
+      persistBlocksForDate(date, replacing ? newBlocks : [...existing, ...newBlocks]);
+
+      const base = replacing
+        ? `Replaced ${existing.length} event${existing.length === 1 ? '' : 's'} with ${newBlocks.length} session${newBlocks.length === 1 ? '' : 's'} from “${meta.templateTitle}” for ${date}.`
+        : `Generated ${newBlocks.length} session${newBlocks.length === 1 ? '' : 's'} from “${meta.templateTitle}” for ${date}.`;
+      if (!obsidianConfig?.vaultPath) {
+        setSyncFeedback({
+          message: `${base} Connect an Obsidian vault to also record it in a daily note.`,
+          type: 'info',
+        });
+        return null;
+      }
+      const section = buildDayScheduleSection(
+        meta.templateTitle,
+        date,
+        newBlocks.map((b) => ({
+          startTime: b.startTime,
+          endTime: b.endTime,
+          title: stripDateSuffix(b.modeName),
+          detail: b.description,
+        }))
+      );
+      const res = await plannerMd.updateDaySchedule(date, section);
+      if (res.success) {
+        setSyncFeedback({ message: `${base} Daily note updated.`, type: 'success' });
+      } else {
+        setSyncFeedback({
+          message: `${base} Daily note not updated: ${res.error || 'unknown error'}.`,
+          type: 'error',
+        });
+      }
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  };
+
+  // Quick schedule a task into the next open slot
+  const handleScheduleTask = (task: TaskItem) => {
+    const taskMode = modes.find((m) => m.id === task.modeId) || modes[0];
+    const duration = taskMode.workDuration || 45;
+
+    // Find first free slot after 09:00
+    let candidateStartMins = 9 * 60;
+    const sorted = [...blocks].sort((a, b) => a.startTime.localeCompare(b.startTime));
+
+    for (const b of sorted) {
+      const [bStartH, bStartM] = b.startTime.split(':').map(Number);
+      const [bEndH, bEndM] = b.endTime.split(':').map(Number);
+      const bStart = bStartH * 60 + bStartM;
+      const bEnd = bEndH * 60 + bEndM;
+
+      if (candidateStartMins + duration <= bStart) {
+        break;
+      }
+      if (candidateStartMins < bEnd) {
+        candidateStartMins = bEnd + 10; // 10m buffer
+      }
+    }
+
+    const startH = Math.floor(candidateStartMins / 60);
+    const startM = candidateStartMins % 60;
+    const endMins = candidateStartMins + duration;
+    const endH = Math.floor(endMins / 60);
+    const endM = endMins % 60;
+
+    const sTime = `${String(startH).padStart(2, '0')}:${String(startM).padStart(2, '0')}`;
+    const eTime = `${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`;
+
+    const newBlock: ScheduleBlock = {
+      id: `block-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      date: selectedDate,
+      startTime: sTime,
+      endTime: eTime,
+      modeId: taskMode.id,
+      modeName: task.title,
+      modeIcon: taskMode.icon,
+      modeColor: taskMode.color,
+      workDuration: taskMode.workDuration,
+      breakDuration: taskMode.breakDuration,
+      cycles: 1,
+      status: 'approved',
+    };
+
+    persistBlocksForDate(selectedDate, [...blocks, newBlock]);
+    setSyncFeedback({
+      message: `Scheduled "${stripDateSuffix(task.title)}" at ${formatTime12h(sTime)}!`,
+      type: 'success',
+    });
+  };
+
+  // Auto-pack all pending tasks into calendar
+  const handleAutoScheduleFromTasks = () => {
+    const pendingTasks = (tasks || []).filter((t) => !t.completed);
+    if (pendingTasks.length === 0) {
+      setSyncFeedback({ message: 'No pending tasks in queue to schedule.', type: 'info' });
+      return;
+    }
+
+    let cursorMins = 9 * 60; // Start at 9:00 AM
+    const newBlocks: ScheduleBlock[] = [];
+
+    for (const task of pendingTasks) {
+      const taskMode = modes.find((m) => m.id === task.modeId) || modes[0];
+      const dur = taskMode.workDuration || 45;
+      const brk = taskMode.breakDuration || 10;
+
+      const startH = Math.floor(cursorMins / 60);
+      const startM = cursorMins % 60;
+      const endMins = cursorMins + dur;
+      const endH = Math.floor(endMins / 60);
+      const endM = endMins % 60;
+
+      newBlocks.push({
+        id: `block-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        date: selectedDate,
+        startTime: `${String(startH).padStart(2, '0')}:${String(startM).padStart(2, '0')}`,
+        endTime: `${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`,
+        modeId: taskMode.id,
+        modeName: task.title,
+        modeIcon: taskMode.icon,
+        modeColor: taskMode.color,
+        workDuration: dur,
+        breakDuration: brk,
+        cycles: 1,
+        status: 'approved',
+      });
+
+      cursorMins = endMins + brk;
+    }
+
+    persistBlocksForDate(selectedDate, newBlocks);
+    setSyncFeedback({ message: `Auto-scheduled ${newBlocks.length} tasks into ${selectedDate}!`, type: 'success' });
+  };
+
+  const handleExportIcs = async () => {
+    if (blocks.length === 0) {
+      setSyncFeedback({ message: 'No blocks to export for this day.', type: 'info' });
+      return;
+    }
+    if (window.focusAPI?.exportToIcs) {
+      const res = await window.focusAPI.exportToIcs(blocks);
+      if (res.success) {
+        setSyncFeedback({ message: 'Exported & opened in Apple Calendar (.ics)!', type: 'success' });
+      }
+    }
+  };
+
+  // Sync to Obsidian handler
+  const handleSyncToObsidian = async () => {
+    if (!obsidianConfig || !obsidianConfig.vaultPath) {
+      setSyncFeedback({
+        message: 'Obsidian sync folder is not set. Configure it in Preferences (⌘,).',
+        type: 'info',
+      });
+      return;
+    }
+    setIsObsidianSyncing(true);
+    try {
+      const res = await obsidianService.syncTasks(tasks, modes, obsidianConfig);
+      if (res.success) {
+        onObsidianSynced?.(new Date().toISOString());
+        setSyncFeedback({
+          message: `Synced ${res.syncedCount} tasks to Obsidian vault!`,
+          type: 'success',
+        });
+      } else {
+        setSyncFeedback({
+          message: res.error || 'Failed to sync with Obsidian.',
+          type: 'error',
+        });
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setSyncFeedback({ message: msg, type: 'error' });
+    } finally {
+      setIsObsidianSyncing(false);
+    }
+  };
+
+  // Total Focus Minutes scheduled for today
+  const totalFocusMinutesScheduled = useMemo(() => {
+    return blocks.reduce((acc, b) => {
+      const [sH, sM] = b.startTime.split(':').map(Number);
+      const [eH, eM] = b.endTime.split(':').map(Number);
+      return acc + Math.max(0, (eH * 60 + eM) - (sH * 60 + sM));
+    }, 0);
+  }, [blocks]);
+
+  // Daily goal: 5 hours (300 mins)
+  const DAILY_GOAL_MINS = 300;
+  const goalProgressPercent = Math.min(100, Math.round((totalFocusMinutesScheduled / DAILY_GOAL_MINS) * 100));
+
+  // Generate hour slots array: [6, 7, 8, ... 22]
+  const hourSlots = Array.from({ length: TOTAL_HOURS }, (_, i) => START_HOUR + i);
+
+  // Mini Month Calendar computation for sidebar
+  const miniCalendarDays = useMemo(() => {
+    const year = miniCalendarMonth.getFullYear();
+    const month = miniCalendarMonth.getMonth();
+
+    const firstDayIndex = new Date(year, month, 1).getDay(); // 0 is Sun
+    const totalDaysInMonth = new Date(year, month + 1, 0).getDate();
+
+    const cells: { dateStr: string; dayNum: number; isCurrentMonth: boolean; isToday: boolean; isSelected: boolean; hasBlocks: boolean }[] = [];
+
+    // Empty lead cells
+    for (let i = 0; i < firstDayIndex; i++) {
+      cells.push({
+        dateStr: '',
+        dayNum: 0,
+        isCurrentMonth: false,
+        isToday: false,
+        isSelected: false,
+        hasBlocks: false,
+      });
+    }
+
+    // Days in current month
+    for (let d = 1; d <= totalDaysInMonth; d++) {
+      const dStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      const dayPlan = plans[dStr];
+      const hasPlanBlocks = (dayPlan?.blocks?.length || 0) > 0;
+      cells.push({
+        dateStr: dStr,
+        dayNum: d,
+        isCurrentMonth: true,
+        isToday: dStr === todayStr,
+        isSelected: dStr === selectedDate,
+        hasBlocks: hasPlanBlocks,
+      });
+    }
+
+    return cells;
+  }, [miniCalendarMonth, plans, todayStr, selectedDate]);
+
+  // Mini Month Navigation
+  const handlePrevMiniMonth = () => {
+    setMiniCalendarMonth(new Date(miniCalendarMonth.getFullYear(), miniCalendarMonth.getMonth() - 1, 1));
+  };
+  const handleNextMiniMonth = () => {
+    setMiniCalendarMonth(new Date(miniCalendarMonth.getFullYear(), miniCalendarMonth.getMonth() + 1, 1));
+  };
+
+  // Filter blocks by enabled mode checklist
+  const visibleBlocks = useMemo(() => {
+    return blocks.filter((b) => enabledModeIds.has(b.modeId));
+  }, [blocks, enabledModeIds]);
+
+  // Side-by-side cascade lanes for overlapping grid events (day view).
+  // All-day events render in their own strip (never in the grid): a 00:00–
+  // 23:59 block would otherwise cover the whole day and force everything
+  // into one cascade cluster.
+  const gridBlocks = useMemo(() => visibleBlocks.filter((b) => !b.allDay), [visibleBlocks]);
+  const allDayBlocks = useMemo(() => visibleBlocks.filter((b) => b.allDay), [visibleBlocks]);
+  const dayLayout = useMemo(() => layoutOverlappingBlocks(gridBlocks), [gridBlocks]);
+  return (
+    <div className="flex-1 flex flex-col h-full overflow-hidden select-none motion-blur-in">
+      {/* =========================================================================
+          APPLE CALENDAR TOP TOOLBAR
+          ========================================================================= */}
+      <div 
+        className="px-6 py-2.5 border-b flex items-center justify-between z-20 liquid-glass shrink-0"
+        style={{ borderColor: isDark ? 'rgba(255,255,255,0.09)' : 'rgba(0,0,0,0.08)' }}
+      >
+        {/* Left: Back button + Sidebar toggle + Date Controls */}
+        <div className="flex items-center space-x-3">
+          <button
+            onClick={onBackToLauncher}
+            className="p-1.5 rounded-xl liquid-glass border transition-all active:scale-95 cursor-pointer hover:bg-white/10"
+            style={{ color: currentTheme.textSecondary }}
+            title="Back to Tasks [1]"
+          >
+            <ArrowLeft className="w-4 h-4" />
+          </button>
+
+          <button
+            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+            className={`p-1.5 rounded-xl border transition-all active:scale-95 cursor-pointer ${
+              isSidebarOpen ? 'bg-sky-500/15 text-sky-400 border-sky-500/30' : 'liquid-glass hover:bg-white/10'
+            }`}
+            style={{ color: isSidebarOpen ? undefined : currentTheme.textSecondary }}
+            title="Toggle Calendar Sidebar (⌘⌥S)"
+          >
+            <PanelLeft className="w-4 h-4" />
+          </button>
+
+          {/* Date Navigation (Apple style) */}
+          <div className="flex items-center space-x-1 pl-1">
+            <button
+              onClick={handleToday}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer shadow-sm ${
+                isSelectedToday
+                  ? 'bg-[#ff3b30] text-white border-[#ff3b30] shadow-[0_0_12px_rgba(255,59,48,0.4)]'
+                  : 'liquid-glass border hover:bg-white/10'
+              }`}
+              style={{ color: isSelectedToday ? '#ffffff' : currentTheme.textPrimary }}
+            >
+              Today
+            </button>
+            <div className="flex items-center space-x-0.5 liquid-glass rounded-xl border p-0.5">
+              <button
+                onClick={handlePrevDay}
+                className="p-1.5 rounded-lg hover:bg-white/10 active:scale-95 cursor-pointer transition-all"
+                style={{ color: currentTheme.textSecondary }}
+                title="Previous"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={handleNextDay}
+                className="p-1.5 rounded-lg hover:bg-white/10 active:scale-95 cursor-pointer transition-all"
+                style={{ color: currentTheme.textSecondary }}
+                title="Next"
+              >
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+
+          {/* Apple Calendar Date Headline & Icon Badge */}
+          <div className="flex items-center space-x-2.5 pl-2">
+            {/* Apple Calendar Iconic Date Tile */}
+            <div 
+              className="w-9 h-9 rounded-xl border flex flex-col items-center justify-center overflow-hidden shadow-sm shrink-0 cursor-pointer hover:scale-105 transition-transform"
+              style={{
+                backgroundColor: isDark ? '#1a1d26' : '#ffffff',
+                borderColor: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.12)',
+              }}
+              onClick={handleToday}
+              title="Click to jump to Today"
+            >
+              <div className="w-full bg-[#ff3b30] py-0.2 text-[8px] font-black text-center text-white uppercase tracking-wider">
+                {monthShort}
+              </div>
+              <div 
+                className="text-xs font-bold -mt-0.5"
+                style={{ color: isSelectedToday ? '#ff3b30' : currentTheme.textPrimary }}
+              >
+                {dayNumber}
+              </div>
+            </div>
+
+            <div>
+              <div className="flex items-baseline space-x-1.5">
+                <h1 
+                  className="text-base sm:text-lg font-bold tracking-tight"
+                  style={{ color: currentTheme.textPrimary }}
+                >
+                  {formattedDayOfWeek}
+                </h1>
+                <span 
+                  className="text-xs font-medium opacity-65"
+                  style={{ color: currentTheme.textSecondary }}
+                >
+                  {formattedMonthDay}, {formattedYear}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Center: Apple Segmented View Switcher: [ Day | Week | Plan ] */}
+        <div className="hidden md:flex items-center p-1 rounded-xl liquid-glass border">
+          <button
+            onClick={() => setCalendarView('day')}
+            className={`px-4 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+              calendarView === 'day'
+                ? 'bg-sky-500 text-white shadow-sm'
+                : 'hover:bg-white/5 opacity-70 hover:opacity-100'
+            }`}
+            style={{ color: calendarView === 'day' ? '#ffffff' : currentTheme.textPrimary }}
+          >
+            Day
+          </button>
+          <button
+            onClick={() => setCalendarView('week')}
+            className={`px-4 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+              calendarView === 'week'
+                ? 'bg-sky-500 text-white shadow-sm'
+                : 'hover:bg-white/5 opacity-70 hover:opacity-100'
+            }`}
+            style={{ color: calendarView === 'week' ? '#ffffff' : currentTheme.textPrimary }}
+          >
+            Week
+          </button>
+          <button
+            onClick={() => setCalendarView('plan')}
+            className={`px-4 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+              calendarView === 'plan'
+                ? 'bg-sky-500 text-white shadow-sm'
+                : 'hover:bg-white/5 opacity-70 hover:opacity-100'
+            }`}
+            style={{ color: calendarView === 'plan' ? '#ffffff' : currentTheme.textPrimary }}
+          >
+            Plan
+          </button>
+        </div>
+
+        {/* Right: Actions (Add Block, Auto-Schedule, Export, Obsidian) */}
+        <div className="flex items-center space-x-2">
+          {/* Daily planned hours metric */}
+          <div 
+            className="px-3 py-1.5 rounded-full liquid-glass text-xs font-mono font-semibold hidden xl:flex items-center space-x-1.5"
+            style={{ color: currentTheme.textSecondary }}
+          >
+            <Clock className="w-3.5 h-3.5 text-sky-400" />
+            <span>{Math.round(totalFocusMinutesScheduled / 60 * 10) / 10}h scheduled</span>
+            <span className="opacity-40">·</span>
+            <span>{blocks.length} {blocks.length === 1 ? 'session' : 'sessions'}</span>
+          </div>
+
+          {/* Google Calendar sync status chip */}
+          {googleChip && (
+            <button
+              onClick={onOpenSettings}
+              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl liquid-glass border text-xs font-semibold transition-all hover:bg-white/10 active:scale-95 cursor-pointer"
+              style={{ color: googleChip.color, borderColor: `${googleChip.color}44` }}
+              title={
+                googleStatus.connected
+                  ? `Google Calendar · ${googleStatus.userEmail || 'connected'}${
+                      googleStatus.lastSyncedAt
+                        ? ` · last synced ${new Date(googleStatus.lastSyncedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                        : ''
+                    }`
+                  : 'Google Calendar sync'
+              }
+            >
+              {googleChip.spin ? (
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <CalendarCheck className="w-3.5 h-3.5" />
+              )}
+              <span className="hidden sm:inline">{googleChip.label}</span>
+            </button>
+          )}
+
+          {/* Obsidian Sync Button (if enabled) */}
+          {obsidianConfig?.enabled && (
+            <button
+              onClick={handleSyncToObsidian}
+              disabled={isObsidianSyncing}
+              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl liquid-glass border hover:bg-purple-500/15 text-xs font-semibold text-purple-400 transition-all active:scale-95 cursor-pointer"
+              title="Sync Tasks to Obsidian Vault"
+            >
+              <FolderSync className={`w-3.5 h-3.5 ${isObsidianSyncing ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">Obsidian</span>
+            </button>
+          )}
+
+          {/* Auto-Plan Tasks */}
+          <button
+            onClick={handleAutoScheduleFromTasks}
+            className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl liquid-glass border hover:bg-sky-500/15 text-xs font-semibold text-sky-400 transition-all active:scale-95 cursor-pointer"
+            title="Automatically schedule pending tasks into calendar"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Auto-Plan</span>
+          </button>
+
+          {/* Apple Calendar .ics export */}
+          <button
+            onClick={handleExportIcs}
+            className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl liquid-glass border text-xs font-semibold transition-all hover:bg-white/10 active:scale-95 cursor-pointer"
+            style={{ color: currentTheme.textPrimary }}
+            title="Export to Apple Calendar (.ics)"
+          >
+            <Download className="w-3.5 h-3.5 text-rose-400" />
+            <span className="hidden lg:inline">Apple Calendar</span>
+          </button>
+
+          {/* Apple Blue "+ Focus Block" button */}
+          <button
+            onClick={() => handleSlotClick(9, 0, selectedDate)}
+            className="flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all hover:brightness-110 active:scale-95 shadow-md cursor-pointer text-white"
+            style={{
+              backgroundColor: '#007aff', // Authentic Apple Blue
+            }}
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>+ Event</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Sync Feedback Toast */}
+      {syncFeedback && (
+        <div className={`px-6 py-2 border-b text-xs font-semibold flex items-center justify-between transition-all ${
+          syncFeedback.type === 'success'
+            ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-400'
+            : syncFeedback.type === 'error'
+            ? 'bg-rose-500/15 border-rose-500/30 text-rose-400'
+            : 'bg-sky-500/15 border-sky-500/30 text-sky-400'
+        }`}>
+          <div className="flex items-center space-x-2">
+            <CheckCircle2 className="w-4 h-4" />
+            <span>{syncFeedback.message}</span>
+          </div>
+          <button onClick={() => setSyncFeedback(null)} className="hover:opacity-70 cursor-pointer">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* =========================================================================
+          MAIN CALENDAR BODY: APPLE SIDEBAR + TIMELINE (DAY / WEEK VIEW)
+          ========================================================================= */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Apple Left Sidebar: Mini Month Calendar, Calendars checklist, Backlog */}
+        {isSidebarOpen && (
+          <div 
+            className="w-72 border-r p-4 overflow-y-auto flex flex-col space-y-5 shrink-0 transition-all duration-300"
+            style={{ 
+              backgroundColor: isDark ? 'rgba(10, 12, 18, 0.45)' : 'rgba(255, 255, 255, 0.55)',
+              borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.07)' 
+            }}
+          >
+            {/* 1. Mini Month Calendar (Apple macOS style) */}
+            <div className="p-3.5 rounded-2xl liquid-glass border space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span 
+                  className="text-xs font-bold tracking-tight"
+                  style={{ color: currentTheme.textPrimary }}
+                >
+                  {miniCalendarMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+                </span>
+                <div className="flex items-center space-x-1">
+                  <button 
+                    onClick={handlePrevMiniMonth}
+                    className="p-1 rounded-lg hover:bg-white/10 active:scale-90 cursor-pointer"
+                    style={{ color: currentTheme.textSecondary }}
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5" />
+                  </button>
+                  <button 
+                    onClick={handleNextMiniMonth}
+                    className="p-1 rounded-lg hover:bg-white/10 active:scale-90 cursor-pointer"
+                    style={{ color: currentTheme.textSecondary }}
+                  >
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Weekday headers: S M T W T F S */}
+              <div className="grid grid-cols-7 text-center text-[10px] font-mono font-bold opacity-60">
+                {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day, idx) => (
+                  <div key={idx}>{day}</div>
+                ))}
+              </div>
+
+              {/* Days grid */}
+              <div className="grid grid-cols-7 gap-y-1 text-center text-xs">
+                {miniCalendarDays.map((cell, idx) => {
+                  if (!cell.isCurrentMonth) {
+                    return <div key={idx} className="h-6" />;
+                  }
+                  return (
+                    <button
+                      key={idx}
+                      onClick={() => setSelectedDate(cell.dateStr)}
+                      className={`h-6 w-6 mx-auto rounded-full flex flex-col items-center justify-center relative transition-all cursor-pointer ${
+                        cell.isToday
+                          ? 'bg-[#ff3b30] text-white font-bold shadow-sm'
+                          : cell.isSelected
+                          ? 'bg-sky-500 text-white font-bold shadow-sm'
+                          : 'hover:bg-white/10'
+                      }`}
+                      style={{
+                        color: cell.isToday || cell.isSelected ? '#ffffff' : currentTheme.textPrimary,
+                      }}
+                    >
+                      <span className="text-[11px] leading-none">{cell.dayNum}</span>
+                      {cell.hasBlocks && !cell.isToday && !cell.isSelected && (
+                        <span className="w-1 h-1 rounded-full bg-sky-400 absolute bottom-0.5" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* 2. Apple Activity Daily Focus Goal Meter */}
+            <div className="p-3.5 rounded-2xl liquid-glass border space-y-2">
+              <div className="flex items-center justify-between text-xs font-bold">
+                <span className="flex items-center space-x-1.5" style={{ color: currentTheme.textPrimary }}>
+                  <Flame className="w-3.5 h-3.5 text-amber-500" />
+                  <span>Daily Focus Goal</span>
+                </span>
+                <span className="font-mono text-sky-400 text-[11px]">{goalProgressPercent}%</span>
+              </div>
+              
+              <div className="w-full h-2 rounded-full bg-black/20 overflow-hidden">
+                <div 
+                  className="h-full rounded-full transition-all duration-500"
+                  style={{
+                    width: `${goalProgressPercent}%`,
+                    background: 'linear-gradient(90deg, #38bdf8 0%, #10b981 100%)',
+                  }}
+                />
+              </div>
+
+              <div className="flex justify-between text-[10px] font-mono opacity-70" style={{ color: currentTheme.textSecondary }}>
+                <span>{Math.round(totalFocusMinutesScheduled / 60 * 10) / 10}h scheduled</span>
+                <span>5h target</span>
+              </div>
+            </div>
+
+            {/* 3. Apple Calendar "FOCUS CALENDARS" Checklist Filter */}
+            <div className="space-y-2">
+              <span 
+                className="text-[10px] font-mono uppercase tracking-wider font-bold block"
+                style={{ color: currentTheme.textMuted }}
+              >
+                Focus Calendars
+              </span>
+
+              <div className="space-y-1.5">
+                {modes.map((mode) => {
+                  const isChecked = enabledModeIds.has(mode.id);
+                  const modeColor = mode.color || currentTheme.accent;
+                  return (
+                    <div
+                      key={mode.id}
+                      onClick={() => toggleModeFilter(mode.id)}
+                      className="px-2.5 py-1.5 rounded-xl hover:bg-white/5 flex items-center justify-between transition-colors cursor-pointer"
+                    >
+                      <div className="flex items-center space-x-2 min-w-0">
+                        <div 
+                          className="w-3.5 h-3.5 rounded-md border flex items-center justify-center transition-all"
+                          style={{
+                            backgroundColor: isChecked ? modeColor : 'transparent',
+                            borderColor: modeColor,
+                          }}
+                        >
+                          {isChecked && <Check className="w-2.5 h-2.5 text-white" />}
+                        </div>
+                        <span 
+                          className="text-xs font-semibold truncate"
+                          style={{ color: isChecked ? currentTheme.textPrimary : currentTheme.textMuted }}
+                        >
+                          {mode.name}
+                        </span>
+                      </div>
+                      <span 
+                        className="text-[10px] font-mono opacity-60"
+                        style={{ color: currentTheme.textSecondary }}
+                      >
+                        {mode.workDuration}m
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* 4. Unscheduled Tasks Backlog */}
+            <div className="space-y-2 flex-1 flex flex-col min-h-0">
+              <div className="flex items-center justify-between">
+                <span 
+                  className="text-[10px] font-mono uppercase tracking-wider font-bold flex items-center space-x-1.5"
+                  style={{ color: currentTheme.textMuted }}
+                >
+                  <CalendarCheck className="w-3.5 h-3.5 text-sky-400" />
+                  <span>Tasks Backlog</span>
+                </span>
+                <span className="text-[10px] font-mono opacity-60">
+                  {tasks.filter((t) => !t.completed).length}
+                </span>
+              </div>
+
+              <div className="space-y-2 overflow-y-auto flex-1 pr-1">
+                {tasks.filter((t) => !t.completed).map((t) => {
+                  const tMode = modes.find((m) => m.id === t.modeId) || modes[0];
+                  return (
+                    <div 
+                      key={t.id}
+                      className="p-2.5 rounded-2xl liquid-glass-card border flex items-center justify-between group transition-all"
+                    >
+                      <div className="flex-1 min-w-0 pr-2">
+                        <span 
+                          className="text-xs font-semibold truncate block"
+                          style={{ color: currentTheme.textPrimary }}
+                        >
+                          {t.title}
+                        </span>
+                        <span 
+                          className="text-[10px] font-mono block opacity-60"
+                          style={{ color: tMode.color || currentTheme.accent }}
+                        >
+                          {tMode.name} · {tMode.workDuration}m
+                        </span>
+                      </div>
+
+                      <button
+                        onClick={() => handleScheduleTask(t)}
+                        className="p-1.5 rounded-xl bg-sky-500/15 text-sky-400 hover:bg-sky-500/25 text-[11px] font-bold transition-all active:scale-90 cursor-pointer shrink-0 opacity-80 group-hover:opacity-100"
+                        title="Schedule into calendar"
+                      >
+                        <Plus className="w-3 h-3" />
+                      </button>
+                    </div>
+                  );
+                })}
+
+                {tasks.filter((t) => !t.completed).length === 0 && (
+                  <div 
+                    className="text-center py-6 text-xs font-medium space-y-1"
+                    style={{ color: currentTheme.textMuted }}
+                  >
+                    <Sparkles className="w-5 h-5 mx-auto text-emerald-400 opacity-60 mb-2" />
+                    <span>All tasks scheduled!</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Center / Right: Calendar Grid (Day View OR Week View) */}
+        <div 
+          ref={gridScrollRef}
+          className="flex-1 overflow-y-auto relative scroll-smooth flex flex-col"
+          style={{
+            backgroundColor: isDark ? 'rgba(6, 8, 14, 0.65)' : 'rgba(248, 250, 252, 0.65)',
+          }}
+        >
+          {/* =========================================================================
+              VIEW 1: DAY VIEW (Apple Calendar Hourly Timeline)
+              ========================================================================= */}
+          {calendarView === 'day' && (
+            <>
+              {/* All-day strip (Apple Calendar style — outside the timed grid) */}
+              {allDayBlocks.length > 0 && (
+                <div className="flex items-stretch gap-1.5 px-4 py-2 border-b"
+                  style={{ borderColor: isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.06)' }}
+                >
+                  <span
+                    className="text-[10px] font-mono font-bold uppercase tracking-wider w-16 sm:w-20 pr-3 text-right shrink-0 self-center select-none"
+                    style={{ color: currentTheme.textMuted }}
+                  >
+                    All-day
+                  </span>
+                  <div className="flex-1 flex flex-wrap gap-1.5 min-w-0">
+                    {allDayBlocks.map((block) => {
+                      const mode = modes.find((m) => m.id === block.modeId) || modes[0];
+                      const blockColor = block.modeColor || mode.color || currentTheme.accent;
+                      return (
+                        <button
+                          key={block.id}
+                          onClick={(e) => handleEditBlock(block, e)}
+                          className="flex items-center space-x-1.5 px-2.5 py-1 rounded-lg border text-[11px] font-bold truncate max-w-full hover:brightness-110 active:scale-95 cursor-pointer transition-all"
+                          style={{
+                            backgroundColor: isDark ? `${blockColor}22` : `${blockColor}15`,
+                            borderColor: `${blockColor}45`,
+                            color: currentTheme.textPrimary,
+                          }}
+                          title="All-day event — click to edit"
+                        >
+                          <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: blockColor }} />
+                          <span className="truncate">{stripDateSuffix(block.modeName)}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            <div 
+              className="relative w-full"
+              style={{ height: `${TOTAL_HOURS * hourHeight}px` }}
+            >
+              {/* Horizontal Hour Rows */}
+              {hourSlots.map((hour, idx) => {
+                const timeLabel = formatTime12h(`${String(hour).padStart(2, '0')}:00`);
+                return (
+                  <div
+                    key={hour}
+                    className="absolute w-full flex items-start group"
+                    style={{
+                      top: `${idx * hourHeight}px`,
+                      height: `${hourHeight}px`,
+                    }}
+                    onClick={() => handleSlotClick(hour, 0, selectedDate)}
+                  >
+                    {/* Left Apple Hour Label */}
+                    <div 
+                      className="w-16 sm:w-20 pr-3 text-right text-[11px] font-medium -mt-2.5 select-none shrink-0"
+                      style={{ color: currentTheme.textMuted }}
+                    >
+                      {timeLabel}
+                    </div>
+
+                    {/* Grid Area with Hairline Borders */}
+                    <div 
+                      className="flex-1 h-full border-t relative cursor-pointer hover:bg-white/[0.02] transition-colors"
+                      style={{ borderColor: isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.06)' }}
+                      onPointerDown={(e) => startCreateDrag(e, selectedDate)}
+                    >
+                      {/* Subtle 30-minute dashed separator */}
+                      <div 
+                        className="absolute w-full top-1/2 border-t border-dashed pointer-events-none"
+                        style={{ borderColor: isDark ? 'rgba(255,255,255,0.035)' : 'rgba(0,0,0,0.035)' }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* Apple Red Current-Time Indicator Line */}
+              {isSelectedToday && showCurrentTimeLine && (
+                <div 
+                  className={`absolute w-full flex items-center z-30 pointer-events-none ${isZooming ? '' : 'transition-all duration-1000 ease-linear'}`}
+                  style={{ top: `${currentTimeLineTop}px` }}
+                >
+                  {/* Apple Red Bead Dot */}
+                  <div className="w-16 sm:w-20 pr-2 flex justify-end items-center">
+                    <span className="w-2.5 h-2.5 rounded-full bg-[#ff3b30] shadow-[0_0_8px_rgba(255,59,48,0.9)] animate-ping absolute" />
+                    <span className="w-2.5 h-2.5 rounded-full bg-[#ff3b30] relative z-10" />
+                  </div>
+                  {/* Razor-thin Apple Red Line */}
+                  <div className="flex-1 h-[1.5px] bg-[#ff3b30] shadow-[0_0_6px_rgba(255,59,48,0.7)]" />
+                </div>
+              )}
+
+              {/* Scheduled Event Cards (Day View) */}
+              <div ref={dayEventsRef} className="absolute top-0 left-16 sm:left-20 right-4 bottom-0 pointer-events-none">
+                {gridBlocks.map((block) => {
+                  const [sH, sM] = block.startTime.split(':').map(Number);
+                  const [eH, eM] = block.endTime.split(':').map(Number);
+
+                  const startAbsMins = sH * 60 + (sM || 0);
+                  const endAbsMins = eH * 60 + (eM || 0);
+                  const durationMins = Math.max(20, endAbsMins - startAbsMins);
+
+                  const top = minutesToY(startAbsMins, START_HOUR, hourHeight);
+                  // Height follows the real duration, with a readable floor for
+                  // isolated short events — but the floor is capped at the next
+                  // event sharing this card's horizontal space, so a short block
+                  // can never grow into the one below it.
+                  const naturalHeight = (durationMins / 60) * hourHeight - DAY_EVENT_GAP_PX;
+                  const horizon = nextSharedHorizon(block.id, gridBlocks, dayLayout);
+                  const horizonHeight = ((horizon - startAbsMins) / 60) * hourHeight - DAY_EVENT_GAP_PX;
+                  const height = Math.max(2, Math.min(Math.max(DAY_MIN_EVENT_HEIGHT, naturalHeight), horizonHeight));
+
+                  const mode = modes.find((m) => m.id === block.modeId) || modes[0];
+                  const blockColor = block.modeColor || mode.color || currentTheme.accent;
+                  const place = dayLayout[block.id] || { left: 0, width: 1, lane: 0, span: 1, lanes: 1 };
+                  const narrow = place.width < 1;
+                  const compact = height < 52;
+                  // Apple-style expanding columns: left/width are fractions of the
+                  // day column, so overlapped events sit side by side and spring
+                  // back to full width once their neighbours have ended.
+                  const cardLeft = `calc(${(place.left * 100).toFixed(4)}% + ${DAY_EVENT_GAP_PX}px)`;
+                  const cardWidth = `calc(${(place.width * 100).toFixed(4)}% - ${DAY_EVENT_GAP_PX * 2}px)`;
+
+                  return (
+                    <div
+                      key={block.id}
+                      onClick={(e) => handleEditBlock(block, e)}
+                      onPointerDown={(e) => startCardDrag(e, block, 'move')}
+                      className={`absolute rounded-lg border ${compact ? 'px-1.5 py-0.5' : narrow ? 'p-1.5' : 'p-2.5'} pointer-events-auto transition-transform duration-200 hover:scale-[1.008] hover:z-20 cursor-grab active:cursor-grabbing shadow-lg group flex flex-col justify-between overflow-hidden`}
+                      style={{
+                        top: `${top}px`,
+                        height: `${height}px`,
+                        left: cardLeft,
+                        width: cardWidth,
+                        backgroundColor: isDark ? `${blockColor}22` : `${blockColor}15`,
+                        borderColor: `${blockColor}45`,
+                        boxShadow: `0 4px 16px -2px rgba(0,0,0,0.25), inset 3px 0 0 0 ${blockColor}`,
+                        opacity: dragPreview?.blockId === block.id && dragPreview.mode !== 'create' ? 0.35 : 1,
+                      }}
+                      title="Drag to move · Alt-drag to copy · edit on click"
+                    >
+                      {compact ? (
+                        <>
+                          {/* Compact single line: time stays visible on short events */}
+                          <div className="flex items-center gap-1.5 h-full min-w-0">
+                            <span
+                              className="text-[10px] font-mono font-semibold shrink-0"
+                              style={{ color: currentTheme.textSecondary }}
+                            >
+                              {formatTime12h(block.startTime)}
+                            </span>
+                            <span
+                              className="text-[11px] font-bold truncate tracking-tight"
+                              style={{ color: currentTheme.textPrimary }}
+                            >
+                              {stripDateSuffix(block.modeName)}
+                            </span>
+                          </div>
+                          {/* Hover actions overlay (no room in flow) */}
+                          <div
+                            className="absolute right-1 top-1/2 -translate-y-1/2 hidden group-hover:flex items-center gap-0.5 rounded-lg p-0.5 z-10"
+                            style={{ backgroundColor: isDark ? 'rgba(6,8,14,0.75)' : 'rgba(255,255,255,0.88)' }}
+                          >
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (block.timerEnabled === false) return;
+                                onStartBlockInTimer(mode, block);
+                              }}
+                              disabled={block.timerEnabled === false}
+                              className={`p-1 rounded-lg transition-all shadow-sm ${
+                                block.timerEnabled === false
+                                  ? 'bg-white/5 text-current opacity-30 cursor-not-allowed'
+                                  : 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 active:scale-90 cursor-pointer'
+                              }`}
+                              title={
+                                block.timerEnabled === false
+                                  ? 'Timer is disabled for this session (template setting)'
+                                  : 'Start Focus Session Now'
+                              }
+                            >
+                              <Play className="w-2.5 h-2.5 fill-current" />
+                            </button>
+                            <button
+                              onClick={(e) => handleDeleteBlock(block, e)}
+                              className="p-1 rounded-lg hover:bg-rose-500/20 text-rose-400 transition-all active:scale-90 cursor-pointer"
+                              title="Delete Block"
+                            >
+                              <Trash2 className="w-2.5 h-2.5" />
+                            </button>
+                          </div>
+                        </>
+                      ) : (
+                      /* Block Header */
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center space-x-1.5">
+                            <DynamicIcon name={block.modeIcon || mode.icon} className="w-3.5 h-3.5" style={{ color: blockColor }} />
+                            <span 
+                              className="text-xs font-bold truncate tracking-tight"
+                              style={{ color: currentTheme.textPrimary }}
+                            >
+                              {stripDateSuffix(block.modeName)}
+                            </span>
+                          </div>
+                          <span 
+                            className="text-[10px] font-mono block opacity-75 font-semibold mt-0.5"
+                            style={{ color: currentTheme.textSecondary }}
+                          >
+                            {formatTimeRange12h(block.startTime, block.endTime)} ({durationMins}m)
+                          </span>
+                        </div>
+
+                        {/* Hover Quick Action Buttons */}
+                        <div className="flex items-center space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (block.timerEnabled === false) return;
+                              onStartBlockInTimer(mode, block);
+                            }}
+                            disabled={block.timerEnabled === false}
+                            className={`p-1.5 rounded-xl transition-all shadow-sm ${
+                              block.timerEnabled === false
+                                ? 'bg-white/5 text-current opacity-30 cursor-not-allowed'
+                                : 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 active:scale-90 cursor-pointer'
+                            }`}
+                            title={
+                              block.timerEnabled === false
+                                ? 'Timer is disabled for this session (template setting)'
+                                : 'Start Focus Session Now'
+                            }
+                          >
+                            <Play className="w-3 h-3 fill-current" />
+                          </button>
+                          <button
+                            onClick={(e) => handleDeleteBlock(block, e)}
+                            className="p-1.5 rounded-xl hover:bg-rose-500/20 text-rose-400 transition-all active:scale-90 cursor-pointer"
+                            title="Delete Block"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </div>
+                      )}
+
+                      {/* Bottom Metadata: Cycles (hidden on narrow overlap columns) */}
+                      {height > 52 && !narrow && (
+                        <div className="flex items-center justify-between text-[10px] font-mono pt-1">
+                          <span 
+                            className="px-2 py-0.5 rounded-md font-semibold"
+                            style={{
+                              backgroundColor: blockColor + '25',
+                              color: blockColor,
+                            }}
+                          >
+                            {mode.name} · {block.cycles || 1} {block.cycles === 1 ? 'cycle' : 'cycles'}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Top-edge resize handle (drag to change start time) */}
+                      {!compact && (
+                        <div
+                          onPointerDown={(e) => startCardDrag(e, block, 'resize-start')}
+                          className="absolute top-0 left-0 right-0 h-2.5 cursor-ns-resize opacity-0 group-hover:opacity-100 transition-opacity flex items-start justify-center pt-0.5 z-10"
+                          title="Drag to change start time"
+                        >
+                          <div className="w-8 h-1 rounded-full opacity-70" style={{ backgroundColor: blockColor }} />
+                        </div>
+                      )}
+
+                      {/* Bottom-edge resize handle */}
+                      <div
+                        onPointerDown={(e) => startCardDrag(e, block, 'resize')}
+                        className="absolute bottom-0 left-0 right-0 h-3 cursor-ns-resize opacity-0 group-hover:opacity-100 transition-opacity flex items-end justify-center pb-0.5 z-10"
+                        title="Drag to resize"
+                      >
+                        <div className="w-10 h-1 rounded-full opacity-70" style={{ backgroundColor: blockColor }} />
+                      </div>
+                    </div>
+                  );
+                })}
+                {/* Drag ghost (move / resize / create preview) */}
+                {dragPreview && dragPreview.date === selectedDate && (
+                  <div
+                    className="absolute left-2 right-2 rounded-xl border-2 border-dashed pointer-events-none z-40 px-2.5 py-1 overflow-hidden"
+                    style={{
+                      top: `${minutesToY(dragPreview.start, START_HOUR, hourHeight)}px`,
+                      height: `${Math.max(30, minutesToY(dragPreview.end, START_HOUR, hourHeight) - minutesToY(dragPreview.start, START_HOUR, hourHeight))}px`,
+                      borderColor: currentTheme.accent,
+                      backgroundColor: `${currentTheme.accent}2b`,
+                    }}
+                  >
+                    <span className="text-[10px] font-mono font-bold block" style={{ color: currentTheme.textPrimary }}>
+                      {formatTimeRange12h(minutesToHHMM(dragPreview.start), minutesToHHMM(dragPreview.end))}
+                      {dragPreview.mode === 'create' ? ' · new event' : ''}
+                      {dragPreview.altCopy ? ' · copy' : ''}
+                    </span>
+                    {dragPreview.mode !== 'create' && (
+                      <span className="text-[11px] font-bold block truncate" style={{ color: currentTheme.textPrimary }}>
+                        {stripDateSuffix(dragPreview.title)}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+            </>
+          )}
+
+          {/* =========================================================================
+              VIEW 2: WEEK VIEW (Apple Calendar 7-Day Columns Layout)
+              ========================================================================= */}
+          {calendarView === 'week' && (
+            <div className="flex-1 flex flex-col min-w-[700px]">
+              {/* 7-Day Header Strip */}
+              <div 
+                className="flex border-b sticky top-0 z-30 liquid-glass backdrop-blur-md"
+                style={{ borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)' }}
+              >
+                {/* Gutter spacer */}
+                <div className="w-16 shrink-0" />
+
+                {/* 7 Columns Header */}
+                <div className="flex-1 grid grid-cols-7 divide-x" style={{ borderColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)' }}>
+                  {weekDaysInfo.map((col) => (
+                    <div 
+                      key={col.dateStr}
+                      onClick={() => {
+                        setSelectedDate(col.dateStr);
+                        setCalendarView('day');
+                      }}
+                      className={`p-2 text-center transition-colors cursor-pointer hover:bg-white/5 ${
+                        col.isSelected ? 'bg-white/5' : ''
+                      }`}
+                    >
+                      <span className="text-[10px] font-mono uppercase tracking-wider block opacity-70" style={{ color: currentTheme.textSecondary }}>
+                        {col.dayName}
+                      </span>
+                      <span 
+                        className={`inline-flex items-center justify-center w-7 h-7 rounded-full text-xs font-bold mt-0.5 ${
+                          col.isToday
+                            ? 'bg-[#ff3b30] text-white shadow-sm'
+                            : col.isSelected
+                            ? 'bg-sky-500 text-white'
+                            : ''
+                        }`}
+                        style={{ color: col.isToday || col.isSelected ? '#ffffff' : currentTheme.textPrimary }}
+                      >
+                        {col.dayNum}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* All-day strip (one cell per day; grid stays for timed events) */}
+              {weekDaysInfo.some(
+                (col) => (plans[col.dateStr]?.blocks || []).some((b) => b.allDay && enabledModeIds.has(b.modeId))
+              ) && (
+                <div className="flex border-b"
+                  style={{ borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)' }}
+                >
+                  <div className="w-16 shrink-0" />
+                  <div className="flex-1 grid grid-cols-7 divide-x" style={{ borderColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)' }}>
+                    {weekDaysInfo.map((col) => {
+                      const allDay = (plans[col.dateStr]?.blocks || []).filter(
+                        (b) => b.allDay && enabledModeIds.has(b.modeId)
+                      );
+                      return (
+                        <div key={col.dateStr} className="px-1 py-1 space-y-1 min-w-0">
+                          {allDay.map((block) => {
+                            const mode = modes.find((m) => m.id === block.modeId) || modes[0];
+                            const blockColor = block.modeColor || mode.color || currentTheme.accent;
+                            return (
+                              <button
+                                key={block.id}
+                                onClick={(e) => handleEditBlock(block, e)}
+                                className="flex items-center space-x-1 w-full px-1.5 py-0.5 rounded-md border text-[10px] font-bold truncate hover:brightness-110 active:scale-95 cursor-pointer transition-all"
+                                style={{
+                                  backgroundColor: isDark ? `${blockColor}22` : `${blockColor}15`,
+                                  borderColor: `${blockColor}45`,
+                                  color: currentTheme.textPrimary,
+                                }}
+                                title="All-day event — click to edit"
+                              >
+                                <span className="w-1 h-1 rounded-full shrink-0" style={{ backgroundColor: blockColor }} />
+                                <span className="truncate">{stripDateSuffix(block.modeName)}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* 7-Day Grid Body */}
+              <div 
+                className="relative w-full flex-1"
+                style={{ height: `${TOTAL_HOURS * hourHeight}px` }}
+              >
+                {/* Horizontal Hour Rows across week */}
+                {hourSlots.map((hour, idx) => {
+                  const timeLabel = formatTime12h(`${String(hour).padStart(2, '0')}:00`);
+                  return (
+                    <div
+                      key={hour}
+                      className="absolute w-full flex items-start"
+                      style={{
+                        top: `${idx * hourHeight}px`,
+                        height: `${hourHeight}px`,
+                      }}
+                    >
+                      {/* Left Hour Label */}
+                      <div 
+                        className="w-16 pr-2 text-right text-[10px] font-medium -mt-2.5 select-none shrink-0"
+                        style={{ color: currentTheme.textMuted }}
+                      >
+                        {timeLabel}
+                      </div>
+
+                      {/* 7 Column Horizontals */}
+                      <div 
+                        className="flex-1 h-full border-t grid grid-cols-7 divide-x"
+                        style={{ 
+                          borderColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.05)',
+                        }}
+                      >
+                        {weekDaysInfo.map((col) => (
+                          <div 
+                            key={col.dateStr}
+                            className="h-full relative cursor-pointer hover:bg-white/[0.02]"
+                            onClick={() => handleSlotClick(hour, 0, col.dateStr)}
+                            onPointerDown={(e) => startCreateDrag(e, col.dateStr)}
+                          >
+                            <div 
+                              className="absolute w-full top-1/2 border-t border-dashed pointer-events-none"
+                              style={{ borderColor: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.03)' }}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {/* Apple Red Line on Today's column in Week View */}
+                {showCurrentTimeLine && (
+                  <div 
+                    className="absolute w-full flex items-center z-30 pointer-events-none"
+                    style={{ top: `${currentTimeLineTop}px` }}
+                  >
+                    <div className="w-16 pr-2 flex justify-end items-center">
+                      <span className="w-2 h-2 rounded-full bg-[#ff3b30]" />
+                    </div>
+                    <div className="flex-1 grid grid-cols-7">
+                      {weekDaysInfo.map((col) => (
+                        <div key={col.dateStr} className="relative">
+                          {col.isToday && (
+                            <div className="w-full h-[1.5px] bg-[#ff3b30] shadow-[0_0_6px_rgba(255,59,48,0.7)]" />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Blocks for all 7 Days across week */}
+                <div ref={weekEventsRef} className="absolute top-0 left-16 right-0 bottom-0 pointer-events-none grid grid-cols-7">
+                  {weekDaysInfo.map((col) => {
+                    const dayBlocks = (plans[col.dateStr]?.blocks || []).filter((b) => enabledModeIds.has(b.modeId));
+                    const gridBlocks = dayBlocks.filter((b) => !b.allDay);
+                    const colLayout = layoutOverlappingBlocks(gridBlocks);
+                    return (
+                      <div key={col.dateStr} className="relative h-full px-1">
+                        {gridBlocks.map((block) => {
+                          const [sH, sM] = block.startTime.split(':').map(Number);
+                          const [eH, eM] = block.endTime.split(':').map(Number);
+
+                          const startAbsMins = sH * 60 + (sM || 0);
+                          const endAbsMins = eH * 60 + (eM || 0);
+                          const durationMins = Math.max(20, endAbsMins - startAbsMins);
+
+                          const top = minutesToY(startAbsMins, START_HOUR, hourHeight);
+                          // Same rule as day view: real duration, readable floor,
+                          // capped at the next event sharing this card's columns.
+                          const naturalHeight = (durationMins / 60) * hourHeight - WEEK_EVENT_GAP_PX;
+                          const horizon = nextSharedHorizon(block.id, gridBlocks, colLayout);
+                          const horizonHeight = ((horizon - startAbsMins) / 60) * hourHeight - WEEK_EVENT_GAP_PX;
+                          const height = Math.max(2, Math.min(Math.max(WEEK_MIN_EVENT_HEIGHT, naturalHeight), horizonHeight));
+
+                          const mode = modes.find((m) => m.id === block.modeId) || modes[0];
+                          const blockColor = block.modeColor || mode.color || currentTheme.accent;
+                          const place = colLayout[block.id] || { left: 0, width: 1, lane: 0, span: 1, lanes: 1 };
+                          const compactWeek = height < 44;
+                          const weekLeft = `calc(${(place.left * 100).toFixed(4)}% + ${WEEK_EVENT_GAP_PX}px)`;
+                          const weekWidth = `calc(${(place.width * 100).toFixed(4)}% - ${WEEK_EVENT_GAP_PX * 2}px)`;
+
+                          return (
+                            <div
+                              key={block.id}
+                              onClick={(e) => handleEditBlock(block, e)}
+                              onPointerDown={(e) => startCardDrag(e, block, 'move')}
+                              className={`absolute rounded-lg border ${compactWeek ? 'px-1 py-0.5' : 'p-1.5'} pointer-events-auto transition-transform duration-200 hover:scale-[1.01] hover:z-20 cursor-grab active:cursor-grabbing shadow-md overflow-hidden group flex flex-col justify-between`}
+                              style={{
+                                top: `${top}px`,
+                                height: `${height}px`,
+                                left: weekLeft,
+                                width: weekWidth,
+                                backgroundColor: isDark ? `${blockColor}22` : `${blockColor}18`,
+                                borderColor: `${blockColor}45`,
+                                boxShadow: `inset 2px 0 0 0 ${blockColor}`,
+                                opacity: dragPreview?.blockId === block.id && dragPreview.mode !== 'create' ? 0.35 : 1,
+                              }}
+                              title="Drag to move · Alt-drag to copy · edit on click"
+                            >
+                              {compactWeek ? (
+                                <div className="flex items-center gap-1 h-full min-w-0">
+                                  <span
+                                    className="text-[9px] font-mono font-semibold shrink-0 opacity-80"
+                                    style={{ color: currentTheme.textSecondary }}
+                                  >
+                                    {formatTime12h(block.startTime)}
+                                  </span>
+                                  <span
+                                    className="text-[10px] font-bold block truncate"
+                                    style={{ color: currentTheme.textPrimary }}
+                                  >
+                                    {stripDateSuffix(block.modeName)}
+                                  </span>
+                                </div>
+                              ) : (
+                              <div className="min-w-0">
+                                <span 
+                                  className="text-[11px] font-bold block truncate"
+                                  style={{ color: currentTheme.textPrimary }}
+                                >
+                                  {stripDateSuffix(block.modeName)}
+                                </span>
+                                <span 
+                                  className="text-[9px] font-mono block opacity-70"
+                                  style={{ color: currentTheme.textSecondary }}
+                                >
+                                  {formatTime12h(block.startTime)}
+                                </span>
+                              </div>
+                              )}
+                              {/* Top-edge resize handle (drag to change start time) */}
+                              {!compactWeek && (
+                                <div
+                                  onPointerDown={(e) => startCardDrag(e, block, 'resize-start')}
+                                  className="absolute top-0 left-0 right-0 h-2 cursor-ns-resize opacity-0 group-hover:opacity-100 transition-opacity flex items-start justify-center pt-px z-10"
+                                  title="Drag to change start time"
+                                >
+                                  <div className="w-5 h-1 rounded-full opacity-70" style={{ backgroundColor: blockColor }} />
+                                </div>
+                              )}
+                              {/* Bottom-edge resize handle */}
+                              <div
+                                onPointerDown={(e) => startCardDrag(e, block, 'resize')}
+                                className="absolute bottom-0 left-0 right-0 h-2.5 cursor-ns-resize opacity-0 group-hover:opacity-100 transition-opacity flex items-end justify-center pb-px z-10"
+                                title="Drag to resize"
+                              >
+                                <div className="w-6 h-1 rounded-full opacity-70" style={{ backgroundColor: blockColor }} />
+                              </div>
+                            </div>
+                          );
+                        })}
+                        {/* Drag ghost for this column */}
+                        {dragPreview && dragPreview.date === col.dateStr && (
+                          <div
+                            className="absolute left-1 right-1 rounded-lg border-2 border-dashed pointer-events-none z-40 px-1.5 py-0.5 overflow-hidden"
+                            style={{
+                              top: `${minutesToY(dragPreview.start, START_HOUR, hourHeight)}px`,
+                              height: `${Math.max(26, minutesToY(dragPreview.end, START_HOUR, hourHeight) - minutesToY(dragPreview.start, START_HOUR, hourHeight))}px`,
+                              borderColor: currentTheme.accent,
+                              backgroundColor: `${currentTheme.accent}2b`,
+                            }}
+                          >
+                            <span className="text-[9px] font-mono font-bold block" style={{ color: currentTheme.textPrimary }}>
+                              {formatTimeRange12h(minutesToHHMM(dragPreview.start), minutesToHHMM(dragPreview.end))}
+                              {dragPreview.mode === 'create' ? ' · new' : ''}
+                              {dragPreview.altCopy ? ' · copy' : ''}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* =========================================================================
+              VIEW 3: PLAN VIEW (Markdown Day Plan + Templates)
+              ========================================================================= */}
+          {calendarView === 'plan' && (
+            <div className="flex-1 flex flex-col min-h-full">
+            <DayPlanMarkdownView
+              date={selectedDate}
+              theme={theme}
+              vaultPath={obsidianConfig?.vaultPath}
+              onOpenSettings={onOpenSettings}
+              modes={modes}
+              plans={plans}
+              onGenerateSchedule={handleGenerateSchedule}
+            />
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* =========================================================================
+          APPLE EVENT INSPECTOR SHEET (ADD / EDIT FOCUS BLOCK MODAL)
+          ========================================================================= */}
+      {isEditModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 select-none">
+          <div 
+            onClick={() => setIsEditModalOpen(false)}
+            className="absolute inset-0 bg-black/65 backdrop-blur-sm transition-opacity"
+          />
+
+          <div 
+            className="relative w-full max-w-md p-6 rounded-3xl border shadow-2xl z-10 space-y-4 animate-modal-in"
+            style={{
+              backgroundColor: isDark ? '#0e111a' : '#ffffff',
+              borderColor: isDark ? 'rgba(255, 255, 255, 0.16)' : 'rgba(0, 0, 0, 0.12)',
+            }}
+          >
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-3 border-b"
+              style={{ borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)' }}
+            >
+              <div className="flex items-center space-x-2">
+                <div className="w-6 h-6 rounded-lg bg-sky-500/15 border border-sky-500/30 flex items-center justify-center text-sky-400">
+                  <CalendarIcon className="w-3.5 h-3.5" />
+                </div>
+                <h2 
+                  className="text-sm font-bold tracking-tight"
+                  style={{ color: currentTheme.textPrimary }}
+                >
+                  {editingBlockId ? 'Edit Focus Block' : 'Schedule Focus Block'}
+                </h2>
+              </div>
+              <button 
+                onClick={() => setIsEditModalOpen(false)}
+                className="p-1 hover:opacity-70 cursor-pointer"
+                style={{ color: currentTheme.textSecondary }}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3.5">
+              {/* Event Title */}
+              <div>
+                <label className="text-[11px] font-mono uppercase block mb-1 font-semibold" style={{ color: currentTheme.textSecondary }}>
+                  Focus Event Title
+                </label>
+                <input
+                  type="text"
+                  value={blockTitle}
+                  onChange={(e) => setBlockTitle(e.target.value)}
+                  placeholder="e.g. Proofs & Problem Set, SAT Reading Practice..."
+                  className="w-full px-3.5 py-2.5 rounded-2xl liquid-glass-input border text-xs font-semibold outline-none"
+                  style={{ color: currentTheme.textPrimary }}
+                  autoFocus
+                />
+              </div>
+
+              {/* Study Mode Selector (Apple colored dots) */}
+              <div>
+                <label className="text-[11px] font-mono uppercase block mb-1 font-semibold" style={{ color: currentTheme.textSecondary }}>
+                  Focus Calendar / Study Mode
+                </label>
+                <div className="grid grid-cols-2 gap-2 max-h-36 overflow-y-auto pr-1">
+                  {modes.map((m) => {
+                    const isSel = blockModeId === m.id;
+                    const modeColor = m.color || currentTheme.accent;
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onClick={() => {
+                          setBlockModeId(m.id);
+                          if (!blockTitle) setBlockTitle(m.name);
+                        }}
+                        className={`p-2 rounded-xl text-left border flex items-center space-x-2 transition-all cursor-pointer ${
+                          isSel 
+                            ? 'bg-sky-500/20 border-sky-500/50 shadow-sm' 
+                            : 'liquid-glass border hover:bg-white/5'
+                        }`}
+                      >
+                        <span 
+                          className="w-2.5 h-2.5 rounded-full shrink-0"
+                          style={{ backgroundColor: modeColor }}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <span className="text-xs font-bold block truncate" style={{ color: currentTheme.textPrimary }}>
+                            {m.name}
+                          </span>
+                          <span className="text-[10px] font-mono block opacity-60" style={{ color: currentTheme.textSecondary }}>
+                            {m.workDuration}m / {m.breakDuration}m
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Date & Time Range */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <div>
+                  <label className="text-[11px] font-mono uppercase block mb-1 font-semibold" style={{ color: currentTheme.textSecondary }}>
+                    Date
+                  </label>
+                  <input
+                    type="date"
+                    value={blockDate}
+                    onChange={(e) => setBlockDate(e.target.value)}
+                    className="w-full px-2.5 py-2 rounded-xl liquid-glass-input border text-xs font-mono font-bold outline-none"
+                    style={{ color: currentTheme.textPrimary }}
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-mono uppercase block mb-1 font-semibold" style={{ color: currentTheme.textSecondary }}>
+                    Start Time
+                  </label>
+                  <input
+                    type="time"
+                    value={blockStartTime}
+                    onChange={(e) => setBlockStartTime(e.target.value)}
+                    className="w-full px-2.5 py-2 rounded-xl liquid-glass-input border text-xs font-mono font-bold outline-none"
+                    style={{ color: currentTheme.textPrimary }}
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-mono uppercase block mb-1 font-semibold" style={{ color: currentTheme.textSecondary }}>
+                    End Time
+                  </label>
+                  <input
+                    type="time"
+                    value={blockEndTime}
+                    onChange={(e) => setBlockEndTime(e.target.value)}
+                    className="w-full px-2.5 py-2 rounded-xl liquid-glass-input border text-xs font-mono font-bold outline-none"
+                    style={{ color: currentTheme.textPrimary }}
+                  />
+                </div>
+              </div>
+
+              {/* Time Calculation Badge */}
+              <div className="p-2.5 rounded-xl liquid-glass border flex items-center justify-between text-xs">
+                <span className="opacity-70" style={{ color: currentTheme.textSecondary }}>Estimated Duration:</span>
+                <span className="font-mono font-bold text-sky-400">
+                  {formatTimeRange12h(blockStartTime, blockEndTime)}
+                </span>
+              </div>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="pt-2 flex items-center justify-between space-x-2">
+              {editingBlockId ? (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    const blk = blocks.find((b) => b.id === editingBlockId);
+                    if (blk) handleDeleteBlock(blk, e);
+                  }}
+                  className="px-3.5 py-2 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-400 hover:bg-rose-500/25 text-xs font-semibold cursor-pointer"
+                >
+                  Delete
+                </button>
+              ) : <div />}
+
+              <div className="flex items-center space-x-2">
+                <button
+                  type="button"
+                  onClick={() => setIsEditModalOpen(false)}
+                  className="px-4 py-2 rounded-xl liquid-glass border text-xs font-semibold hover:bg-white/10 cursor-pointer"
+                  style={{ color: currentTheme.textSecondary }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveModalBlock}
+                  className="px-5 py-2 rounded-xl text-xs font-bold transition-all hover:brightness-110 active:scale-95 shadow-md cursor-pointer text-white"
+                  style={{
+                    backgroundColor: '#007aff', // Apple Blue
+                  }}
+                >
+                  {editingBlockId ? 'Update Event' : 'Add to Calendar'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
