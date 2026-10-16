@@ -1,28 +1,36 @@
 import React, { useState, useEffect } from 'react';
 import confetti from 'canvas-confetti';
-import { 
-  Plus, Check, Trash2, ArrowUp, ArrowDown, Play, CheckCircle2, Circle, 
+import {
+  Plus, Check, Trash2, ArrowUp, ArrowDown, Play, CheckCircle2, Circle,
   ShieldCheck, Shield, ChevronRight, Zap, X, Sparkles, Layers, Calendar,
-  FolderSync
+  FolderSync, Flame, Target, RotateCcw
 } from 'lucide-react';
-import { TaskItem, StudyMode, ThemeId, ObsidianConfig } from '../types';
+import { TaskItem, StudyMode, ModeFolder, ThemeId, ObsidianConfig, ControlSession } from '../types';
 import { THEMES } from '../styles/themes';
 import { DEFAULT_BLOCKLIST } from '../services/defaultData';
 import { DynamicIcon } from './DynamicIcon';
 import { obsidianService } from '../services/obsidian';
 import { stripDateSuffix, preserveDateSuffix } from '../services/taskTitles';
+import { groupModesByFolder } from '../services/modeFolders';
+import { computeStreak, localDayKey, minutesOnDay } from '../services/progress';
+import { clampCycles, sessionWallMinutesFull, checkQuestionDensity } from '../services/sessionFlow';
+import { dueReviews, gradeReview, startReviewing } from '../services/reviews';
+import { ModeViewToggle, useModeViewPref } from './ModeViewToggle';
 
 interface TasksViewProps {
   tasks: TaskItem[];
   modes: StudyMode[];
+  modeFolders?: ModeFolder[];
+  sessions?: ControlSession[];
+  dailyGoalMinutes?: number;
   obsidianConfig?: ObsidianConfig;
-  onAddTask: (title: string, modeId?: string) => TaskItem;
+  onAddTask: (title: string, modeId?: string, cycles?: number) => TaskItem;
   onUpdateTask: (task: TaskItem) => void;
   onDeleteTask: (taskId: string) => void;
   onReorderTasks: (reordered: TaskItem[]) => void;
   onClearCompletedTasks: () => void;
-  onStartFocusWithTask: (task: TaskItem, modeOverride?: StudyMode) => void;
-  onStartStandaloneSession: (mode: StudyMode, selectedTaskIds: string[]) => void;
+  onStartControlWithTask: (task: TaskItem, modeOverride?: StudyMode) => void;
+  onStartStandaloneSession: (mode: StudyMode, selectedTaskIds: string[], cycles?: number) => void;
   onOpenBlocker: () => void;
   onOpenModes: () => void;
   onOpenPlanner?: () => void;
@@ -34,12 +42,15 @@ interface TasksViewProps {
 export const TasksView: React.FC<TasksViewProps> = ({
   tasks,
   modes,
+  modeFolders,
+  sessions,
+  dailyGoalMinutes,
   onAddTask,
   onUpdateTask,
   onDeleteTask,
   onReorderTasks,
   onClearCompletedTasks,
-  onStartFocusWithTask,
+  onStartControlWithTask,
   onStartStandaloneSession,
   onOpenBlocker,
   onOpenModes,
@@ -81,18 +92,65 @@ export const TasksView: React.FC<TasksViewProps> = ({
   const [selectedModeId, setSelectedModeId] = useState<string>(modes[0]?.id || 'mode-deep-work');
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
+  const [editEstimate, setEditEstimate] = useState('');
+  const [editTargetCount, setEditTargetCount] = useState('');
   const [filter, setFilter] = useState<'all' | 'pending' | 'completed'>('all');
+  const [modePickerView, setModePickerView] = useModeViewPref();
+  // Fullscreen-style wide viewport: rearrange the header into a centered hero.
+  // (Driven by matchMedia — responsive-prefix overrides lose the cascade here.)
+  const [isWide, setIsWide] = useState<boolean>(
+    () => typeof window !== 'undefined' && window.innerWidth >= 1400
+  );
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 1400px)');
+    const onChange = (e: MediaQueryListEvent) => setIsWide(e.matches);
+    setIsWide(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
 
   // Mode Selection Modal state for adding task
   const [isModeModalOpen, setIsModeModalOpen] = useState(false);
   const [pendingTaskTitle, setPendingTaskTitle] = useState('');
   const [modalSelectedModeId, setModalSelectedModeId] = useState<string>(modes[0]?.id || 'mode-deep-work');
+  // Cycles chosen for the task being written (per-task, not per-mode).
+  const [pendingTaskCycles, setPendingTaskCycles] = useState<number>(3);
 
   // Mode change modal for existing task
   const [taskForModeChange, setTaskForModeChange] = useState<TaskItem | null>(null);
 
   const selectedMode = modes.find((m) => m.id === selectedModeId) || modes[0];
-  const cycleCount = selectedMode.isChillMode ? 1 : Math.max(1, selectedMode.cycles);
+
+  // Session-level cycle count for the launcher queue. Defaults to the selected
+  // mode's count (silent fallback, not a mode setting) — the user adjusts it
+  // per session here, and per task when writing tasks.
+  const [launcherCycles, setLauncherCycles] = useState<number>(
+    () => clampCycles(modes[0]?.cycles ?? 3, 3)
+  );
+  useEffect(() => {
+    const m = modes.find((mode) => mode.id === selectedModeId) || modes[0];
+    setLauncherCycles(clampCycles(m?.cycles ?? 3, 3));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedModeId]);
+  const cycleCount = selectedMode.isChillMode ? 1 : clampCycles(launcherCycles, 1);
+
+  // Folder-grouped mode ordering for the pickers (flat key order untouched).
+  const folderNameById = new Map((modeFolders || []).map((f) => [f.id, f.name]));
+  const showFolderLabels = (modeFolders?.length || 0) > 0;
+  const orderedModes = groupModesByFolder(modes, modeFolders || []).flatMap((g) => g.modes);
+  const modeGroupLabel = (folderId?: string) =>
+    showFolderLabels ? (folderId ? folderNameById.get(folderId) || 'Ungrouped' : 'Ungrouped') : '';
+  const modePickerEntries: Array<{ label: string | null; m: StudyMode; idx: number }> = (() => {
+    const entries: Array<{ label: string | null; m: StudyMode; idx: number }> = [];
+    let prev: string | null = null;
+    for (const m of orderedModes) {
+      const label = modeGroupLabel(m.folderId);
+      const show = showFolderLabels && label !== prev;
+      prev = label;
+      entries.push({ label: show ? label : null, m, idx: modes.indexOf(m) });
+    }
+    return entries;
+  })();
 
   // queuedTaskIds: fixed-slot array of length cycleCount, where slot idx is Cycle idx+1
   const [queuedTaskIds, setQueuedTaskIds] = useState<string[]>(() => Array(cycleCount).fill(''));
@@ -176,19 +234,21 @@ export const TasksView: React.FC<TasksViewProps> = ({
     if (!newTitle.trim()) return;
     setPendingTaskTitle(newTitle.trim());
     setModalSelectedModeId(selectedModeId);
+    const openingMode = modes.find((m) => m.id === selectedModeId) || modes[0];
+    setPendingTaskCycles(clampCycles(openingMode?.cycles ?? 3, 3));
     setIsModeModalOpen(true);
   };
 
   const handleConfirmAdd = (action: 'start' | 'queue') => {
     if (!pendingTaskTitle.trim()) return;
     const chosenMode = modes.find((m) => m.id === modalSelectedModeId) || selectedMode;
-    const newTask = onAddTask(pendingTaskTitle.trim(), modalSelectedModeId);
+    const newTask = onAddTask(pendingTaskTitle.trim(), modalSelectedModeId, pendingTaskCycles);
     setNewTitle('');
     setPendingTaskTitle('');
     setIsModeModalOpen(false);
 
     if (action === 'start') {
-      onStartFocusWithTask(newTask, chosenMode);
+      onStartControlWithTask(newTask, chosenMode);
     }
   };
 
@@ -249,13 +309,58 @@ export const TasksView: React.FC<TasksViewProps> = ({
 
   const handleSaveEdit = (task: TaskItem) => {
     if (!editTitle.trim()) return;
+    const parsed = parseInt(editEstimate, 10);
+    const estimateMinutes =
+      Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 1440) : undefined;
+    const parsedCount = parseInt(editTargetCount, 10);
+    const targetCount = Number.isFinite(parsedCount) && parsedCount > 0 ? Math.min(parsedCount, 10000) : undefined;
     onUpdateTask({
       ...task,
       // The input shows the clean title; re-attach the note's date suffix so
       // the edit updates the same Obsidian note instead of renaming it.
       title: preserveDateSuffix(task.title, editTitle.trim()),
+      estimateMinutes,
+      ...(targetCount !== undefined ? { targetCount, targetCountLabel: task.targetCountLabel || 'questions' } : { targetCount: undefined }),
     });
     setEditingTaskId(null);
+  };
+
+  const todayKey = localDayKey(new Date());
+  const goalMinutes = dailyGoalMinutes && dailyGoalMinutes > 0 ? dailyGoalMinutes : 120;
+  const goalSessions = (sessions || []).filter((s) => s.countTowardStats && (s.status === 'completed' || s.status === 'cancelled'));
+  const streakDays = computeStreak(goalSessions, goalMinutes);
+  const todayMins = minutesOnDay(goalSessions, localDayKey(new Date()));
+  const goalPct = Math.min(100, Math.round((todayMins / goalMinutes) * 100));
+
+  // Estimated vs attributed-actual chip for a task row (+ question target).
+  const renderEstActual = (task: TaskItem) => {
+    const est = task.estimateMinutes;
+    const actual = task.controlMinutes || 0;
+    const density = task.targetCount != null && est ? checkQuestionDensity(task.targetCount, task.targetCountLabel, est) : null;
+    if (!est && actual <= 0 && task.targetCount == null) return null;
+    const over = !!est && actual > est;
+    return (
+      <span
+        className="inline-flex items-center font-mono text-[10px] shrink-0"
+        style={{ color: currentTheme.textMuted }}
+        title={
+          est && actual > 0
+            ? `Estimated ${est}m · ${actual}m controlled so far`
+            : est
+              ? `Estimated ${est}m`
+              : `${actual}m controlled so far`
+        }
+      >
+        {task.targetCount != null ? <span className={density ? 'text-amber-500 font-bold' : ''}>{task.doneCount || 0}/{task.targetCount} {task.targetCountLabel || 'items'}</span> : null}
+        {task.targetCount != null && (est || actual > 0) ? <span className="opacity-50">&nbsp;·&nbsp;</span> : null}
+        {est ? <span>est {est}m</span> : null}
+        {est && actual > 0 ? <span className="opacity-50">&nbsp;·&nbsp;</span> : null}
+        {actual > 0 ? (
+          <span style={{ color: over ? '#f59e0b' : '#10b981' }}>{actual}m</span>
+        ) : null}
+        {density ? <span className="text-amber-500">&nbsp;⚠ dense</span> : null}
+      </span>
+    );
   };
 
   // Split tasks
@@ -264,6 +369,18 @@ export const TasksView: React.FC<TasksViewProps> = ({
 
   const inProgressTask = uncompleted[0] || null;
   const upNextTasks = uncompleted.slice(1);
+
+  // Spaced-repetition reviews due today or earlier.
+  const dueForReview = dueReviews(tasks, todayKey);
+  const GRADES: { label: string; quality: 1 | 3 | 4 | 5 }[] = [
+    { label: 'Again', quality: 1 },
+    { label: 'Hard', quality: 3 },
+    { label: 'Good', quality: 4 },
+    { label: 'Easy', quality: 5 },
+  ];
+  const gradeTask = (task: TaskItem, quality: 1 | 3 | 4 | 5) => {
+    onUpdateTask({ ...task, review: gradeReview(task.review, quality, todayKey) });
+  };
 
   // Move uncompleted tasks up/down
   const moveUncompleted = (idx: number, direction: 'up' | 'down') => {
@@ -305,16 +422,16 @@ export const TasksView: React.FC<TasksViewProps> = ({
           className="pb-4 border-b space-y-3"
           style={{ borderColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)' }}
         >
-          {/* Top row: Greeting + progress */}
-          <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+          {/* Top row: Greeting + progress — side-by-side windowed, left-aligned stack in fullscreen */}
+          <div className={isWide ? 'flex flex-col items-start gap-4' : 'flex flex-col sm:flex-row sm:items-end justify-between gap-3'}>
             <div className="space-y-1">
-              <h1 
-                className="text-2xl font-bold tracking-tight"
+              <h1
+                className={isWide ? 'text-4xl font-bold tracking-tight text-left' : 'text-2xl font-bold tracking-tight'}
                 style={{ color: currentTheme.textPrimary }}
               >
                 {getGreeting()}, {(userName || 'IBODULLO').replace(/[^a-zA-Z]+$/i, '').split(' ')[0] || 'Ibodullo'}.
               </h1>
-              <p 
+              <p
                 className="text-xs font-medium flex items-center space-x-2"
                 style={{ color: currentTheme.textSecondary }}
               >
@@ -324,22 +441,50 @@ export const TasksView: React.FC<TasksViewProps> = ({
               </p>
             </div>
 
-            <div className="flex items-center space-x-2.5">
+            <div className={`flex items-center gap-2 flex-wrap${isWide ? ' justify-start' : ' justify-end'}`}>
               {obsidianConfig?.enabled && (
                 <button
                   onClick={handleManualSyncObsidian}
                   disabled={isSyncingObsidian}
-                  className="px-3 py-1.5 rounded-full liquid-glass border text-xs font-semibold flex items-center space-x-1.5 text-purple-400 hover:bg-purple-500/15 transition-all cursor-pointer"
+                  className="px-3 py-1.5 rounded-full liquid-glass border text-xs font-semibold flex items-center space-x-1.5 text-purple-400 hover:bg-purple-500/15 transition-all cursor-pointer shrink-0"
                   title={`Sync tasks to Obsidian (${obsidianConfig.vaultPath})`}
                 >
                   <FolderSync className={`w-3.5 h-3.5 ${isSyncingObsidian ? 'animate-spin' : ''}`} />
-                  <span>{obsidianFeedback || (isSyncingObsidian ? 'Syncing...' : 'Sync Obsidian')}</span>
+                  <span className="hidden md:inline">{obsidianFeedback || (isSyncingObsidian ? 'Syncing...' : 'Sync Obsidian')}</span>
                 </button>
               )}
 
-              <div 
-                className="px-3.5 py-1.5 rounded-full liquid-glass text-xs font-semibold flex items-center space-x-2"
+              <div
+                className="px-3 py-1.5 rounded-full liquid-glass text-xs font-semibold flex items-center space-x-1.5 shrink-0"
                 style={{ color: currentTheme.textSecondary }}
+                title={`${streakDays}-day streak of hitting the ${goalMinutes}m daily goal`}
+              >
+                <Flame className="w-3.5 h-3.5 text-amber-500 fill-current" />
+                <span className="hidden md:inline">{streakDays}d streak</span>
+              </div>
+
+              <div
+                className="px-3 py-1.5 rounded-full liquid-glass text-xs font-semibold flex items-center space-x-2 shrink-0"
+                style={{ color: currentTheme.textSecondary }}
+                title={`Today's control: ${todayMins} of ${goalMinutes}m goal`}
+              >
+                <Target className="w-3.5 h-3.5 text-sky-500" />
+                <span className="hidden md:inline">{todayMins}/{goalMinutes}m</span>
+                <span
+                  className="w-10 h-1.5 rounded-full overflow-hidden block"
+                  style={{ backgroundColor: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.1)' }}
+                >
+                  <span
+                    className="block h-full rounded-full"
+                    style={{ width: `${goalPct}%`, backgroundColor: '#38bdf8' }}
+                  />
+                </span>
+              </div>
+
+              <div
+                className="px-3.5 py-1.5 rounded-full liquid-glass text-xs font-semibold flex items-center space-x-2 shrink-0"
+                style={{ color: currentTheme.textSecondary }}
+                title={`${completed.length} of ${tasks.length} tasks done`}
               >
                 <span className="text-emerald-500 font-bold">{completed.length}</span>
                 <span className="opacity-40">/</span>
@@ -476,7 +621,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
               color: filter === 'pending' ? undefined : currentTheme.textSecondary,
             }}
           >
-            To Focus ({uncompleted.length})
+            To Control ({uncompleted.length})
           </button>
           <button
             onClick={() => setFilter('completed')}
@@ -501,7 +646,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
             <div className="flex items-center justify-between">
               <span className="text-[11px] font-mono uppercase tracking-widest text-sky-500 font-bold flex items-center space-x-1.5">
                 <span className="w-2 h-2 rounded-full bg-sky-500 animate-ping" />
-                <span>ACTIVE FOCUS TARGET</span>
+                <span>ACTIVE CONTROL TARGET</span>
               </span>
               <span 
                 className="text-[11px] font-mono"
@@ -531,22 +676,52 @@ export const TasksView: React.FC<TasksViewProps> = ({
                 </button>
 
                 {editingTaskId === inProgressTask.id ? (
-                  <input
-                    type="text"
-                    value={editTitle}
-                    onChange={(e) => setEditTitle(e.target.value)}
-                    onBlur={() => handleSaveEdit(inProgressTask)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleSaveEdit(inProgressTask)}
-                    autoFocus
-                    className="flex-1 bg-transparent text-lg font-bold outline-none border-b border-sky-500"
-                    style={{ color: currentTheme.textPrimary }}
-                  />
+                  <div className="flex-1 flex items-center gap-2 min-w-0">
+                    <input
+                      type="text"
+                      value={editTitle}
+                      onChange={(e) => setEditTitle(e.target.value)}
+                      onBlur={() => handleSaveEdit(inProgressTask)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleSaveEdit(inProgressTask)}
+                      autoFocus
+                      className="flex-1 bg-transparent text-lg font-bold outline-none border-b border-sky-500 min-w-0"
+                      style={{ color: currentTheme.textPrimary }}
+                    />
+                    <input
+                      type="number"
+                      min="1"
+                      max="1440"
+                      value={editEstimate}
+                      onChange={(e) => setEditEstimate(e.target.value)}
+                      onBlur={() => handleSaveEdit(inProgressTask)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleSaveEdit(inProgressTask)}
+                      placeholder="est m"
+                      className="w-16 bg-transparent text-sm font-mono outline-none border-b border-sky-500 text-center shrink-0"
+                      style={{ color: currentTheme.textPrimary }}
+                      title="Estimated minutes for this task"
+                    />
+                    <input
+                      type="number"
+                      min="1"
+                      max="10000"
+                      value={editTargetCount}
+                      onChange={(e) => setEditTargetCount(e.target.value)}
+                      onBlur={() => handleSaveEdit(inProgressTask)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleSaveEdit(inProgressTask)}
+                      placeholder="Qs"
+                      className="w-16 bg-transparent text-sm font-mono outline-none border-b border-emerald-500 text-center shrink-0"
+                      style={{ color: currentTheme.textPrimary }}
+                      title="Question/item target"
+                    />
+                  </div>
                 ) : (
                   <div className="flex-1 min-w-0">
                     <h2
                       onDoubleClick={() => {
                         setEditingTaskId(inProgressTask.id);
                         setEditTitle(stripDateSuffix(inProgressTask.title));
+                        setEditEstimate(inProgressTask.estimateMinutes?.toString() || '');
+                        setEditTargetCount(inProgressTask.targetCount?.toString() || '');
                       }}
                       className="text-lg font-bold truncate cursor-pointer hover:text-sky-500 transition-colors"
                       style={{ color: currentTheme.textPrimary }}
@@ -563,7 +738,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
                           className="flex items-center space-x-2 mt-1 text-xs"
                           style={{ color: currentTheme.textSecondary }}
                         >
-                          <span className="font-mono text-[11px] text-sky-500 font-semibold">Ready to focus</span>
+                          <span className="font-mono text-[11px] text-sky-500 font-semibold">Ready to control</span>
                           <span>·</span>
                           <button
                             type="button"
@@ -583,6 +758,15 @@ export const TasksView: React.FC<TasksViewProps> = ({
                             <span className="font-bold">{heroTaskMode.name}</span>
                             <span className="opacity-70">({heroTaskMode.workDuration}m)</span>
                           </button>
+                          {renderEstActual(inProgressTask)}
+                          {inProgressTask.review && (
+                            <span
+                              className="font-mono text-[10px] shrink-0 text-violet-500"
+                              title={`Repeats every ${inProgressTask.review.intervalDays}d`}
+                            >
+                              ↻ review
+                            </span>
+                          )}
                         </div>
                       );
                     })()}
@@ -590,7 +774,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
                 )}
               </div>
 
-              {/* Start Focus CTA */}
+              {/* Start Control CTA */}
               <div className="flex items-center space-x-2 shrink-0">
                 {(() => {
                   const isQueued = queuedTaskIds.includes(inProgressTask.id);
@@ -627,10 +811,10 @@ export const TasksView: React.FC<TasksViewProps> = ({
                     backgroundColor: currentTheme.accent,
                     color: currentTheme.accentText,
                   }}
-                  title="Start Focus Session on this task"
+                  title="Start Control Session on this task"
                 >
                   <Play className="w-3.5 h-3.5 fill-current" />
-                  <span>START FOCUS</span>
+                  <span>START CONTROL</span>
                 </button>
 
                 <button
@@ -642,6 +826,79 @@ export const TasksView: React.FC<TasksViewProps> = ({
                   <Trash2 className="w-4 h-4" />
                 </button>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* SECTION 1b: DUE FOR REVIEW (spaced repetition) */}
+        {dueForReview.length > 0 && (filter === 'all' || filter === 'pending') && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <span
+                className="text-xs font-mono uppercase tracking-widest font-semibold"
+                style={{ color: currentTheme.textSecondary }}
+              >
+                DUE FOR REVIEW ({dueForReview.length})
+              </span>
+              <span
+                className="text-[11px] font-mono"
+                style={{ color: currentTheme.textMuted }}
+              >
+                grade honestly — intervals adapt
+              </span>
+            </div>
+
+            <div className="space-y-2">
+              {dueForReview.map((task) => {
+                const overdue = (task.review?.dueDay || '') < todayKey;
+                return (
+                  <div
+                    key={task.id}
+                    className="p-3.5 rounded-2xl liquid-glass-card border space-y-2.5"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <RotateCcw className="w-3.5 h-3.5 shrink-0 text-violet-500" />
+                      <span
+                        className="text-sm font-semibold truncate flex-1"
+                        style={{ color: currentTheme.textPrimary }}
+                      >
+                        {stripDateSuffix(task.title)}
+                      </span>
+                      <span
+                        className={`text-[10px] font-mono shrink-0 ${overdue ? 'text-amber-500 font-bold' : ''}`}
+                        style={overdue ? undefined : { color: currentTheme.textMuted }}
+                      >
+                        {overdue ? 'overdue' : 'due today'} · ×{task.review?.reps || 0}
+                      </span>
+                      <button
+                        onClick={() => onStartControlWithTask(task)}
+                        className="px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors cursor-pointer flex items-center space-x-1 shrink-0"
+                        style={{
+                          backgroundColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.06)',
+                          color: currentTheme.textPrimary,
+                        }}
+                        title="Start a control session on this review"
+                      >
+                        <Play className="w-2.5 h-2.5 fill-current" />
+                        <span>Review</span>
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      {GRADES.map((g) => (
+                        <button
+                          key={g.label}
+                          onClick={() => gradeTask(task, g.quality)}
+                          className="flex-1 px-2 py-1.5 rounded-xl liquid-glass border text-[11px] font-bold transition-all hover:scale-[1.02] active:scale-95 cursor-pointer"
+                          style={{ color: currentTheme.textSecondary }}
+                          title={`Grade: ${g.label}`}
+                        >
+                          {g.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
@@ -675,22 +932,52 @@ export const TasksView: React.FC<TasksViewProps> = ({
                     </button>
 
                     {editingTaskId === task.id ? (
-                      <input
-                        type="text"
-                        value={editTitle}
-                        onChange={(e) => setEditTitle(e.target.value)}
-                        onBlur={() => handleSaveEdit(task)}
-                        onKeyDown={(e) => e.key === 'Enter' && handleSaveEdit(task)}
-                        autoFocus
-                        className="flex-1 bg-transparent text-sm font-semibold outline-none border-b border-sky-500"
-                        style={{ color: currentTheme.textPrimary }}
-                      />
+                      <div className="flex-1 flex items-center gap-2 min-w-0">
+                        <input
+                          type="text"
+                          value={editTitle}
+                          onChange={(e) => setEditTitle(e.target.value)}
+                          onBlur={() => handleSaveEdit(task)}
+                          onKeyDown={(e) => e.key === 'Enter' && handleSaveEdit(task)}
+                          autoFocus
+                          className="flex-1 bg-transparent text-sm font-semibold outline-none border-b border-sky-500 min-w-0"
+                          style={{ color: currentTheme.textPrimary }}
+                        />
+                        <input
+                          type="number"
+                          min="1"
+                          max="1440"
+                          value={editEstimate}
+                          onChange={(e) => setEditEstimate(e.target.value)}
+                          onBlur={() => handleSaveEdit(task)}
+                          onKeyDown={(e) => e.key === 'Enter' && handleSaveEdit(task)}
+                          placeholder="est m"
+                          className="w-14 bg-transparent text-xs font-mono outline-none border-b border-sky-500 text-center shrink-0"
+                          style={{ color: currentTheme.textPrimary }}
+                          title="Estimated minutes for this task"
+                        />
+                        <input
+                          type="number"
+                          min="1"
+                          max="10000"
+                          value={editTargetCount}
+                          onChange={(e) => setEditTargetCount(e.target.value)}
+                          onBlur={() => handleSaveEdit(task)}
+                          onKeyDown={(e) => e.key === 'Enter' && handleSaveEdit(task)}
+                          placeholder="Qs"
+                          className="w-14 bg-transparent text-xs font-mono outline-none border-b border-emerald-500 text-center shrink-0"
+                          style={{ color: currentTheme.textPrimary }}
+                          title="Question/item target (e.g. 50)"
+                        />
+                      </div>
                     ) : (
                       <div className="flex items-center space-x-2 flex-1 min-w-0">
                         <span
                           onDoubleClick={() => {
                             setEditingTaskId(task.id);
                             setEditTitle(stripDateSuffix(task.title));
+                            setEditEstimate(task.estimateMinutes?.toString() || '');
+                            setEditTargetCount(task.targetCount?.toString() || '');
                           }}
                           className="text-sm font-semibold truncate cursor-pointer hover:opacity-80"
                           style={{ color: currentTheme.textPrimary }}
@@ -723,11 +1010,31 @@ export const TasksView: React.FC<TasksViewProps> = ({
                             </button>
                           );
                         })()}
+                        {typeof task.cycles === 'number' && task.cycles > 1 && (
+                          <span
+                            className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-mono shrink-0 text-sky-400"
+                            style={{
+                              backgroundColor: isDark ? 'rgba(56,189,248,0.12)' : 'rgba(56,189,248,0.12)',
+                            }}
+                            title={`${task.cycles} control blocks — chosen when this task was created`}
+                          >
+                            ×{task.cycles}
+                          </span>
+                        )}
+                        {renderEstActual(task)}
+                        {task.review && (
+                          <span
+                            className="font-mono text-[10px] shrink-0 text-violet-500"
+                            title={`Repeats every ${task.review.intervalDays}d`}
+                          >
+                            ↻
+                          </span>
+                        )}
                       </div>
                     )}
                   </div>
 
-                  {/* Actions: Reorder, Fast Focus, Delete */}
+                  {/* Actions: Reorder, Fast Control, Delete */}
                   <div className="flex items-center space-x-1 pl-3 shrink-0">
                     {(() => {
                       const isQueued = queuedTaskIds.includes(task.id);
@@ -762,11 +1069,22 @@ export const TasksView: React.FC<TasksViewProps> = ({
                         backgroundColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.06)',
                         color: currentTheme.textPrimary,
                       }}
-                      title="Focus on this task next"
+                      title="Control on this task next"
                     >
                       <Play className="w-2.5 h-2.5 fill-current" />
-                      <span>Focus</span>
+                      <span>Control</span>
                     </button>
+
+                    {!task.review && (
+                      <button
+                        onClick={() => onUpdateTask(startReviewing(task, todayKey))}
+                        className="p-1.5 rounded-lg transition-colors cursor-pointer"
+                        style={{ color: currentTheme.textMuted }}
+                        title="Repeat as a review task (spaced repetition)"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                      </button>
+                    )}
 
                     <button
                       onClick={() => moveUncompleted(idx + 1, 'up')}
@@ -913,7 +1231,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
                       className="text-[11px] font-mono block"
                       style={{ color: currentTheme.textSecondary }}
                     >
-                      {m.workDuration}m {m.cycles > 1 ? `× ${m.cycles}` : ''}
+                      {m.workDuration}m
                     </span>
                   </button>
                 );
@@ -934,17 +1252,18 @@ export const TasksView: React.FC<TasksViewProps> = ({
               >
                 {selectedMode.name}
               </span>
-              <div 
+              {/* B-06: honest preview — first interval big, wall total labeled. */}
+              <div
                 className="font-mono text-5xl font-bold tracking-tighter"
                 style={{ color: currentTheme.textPrimary }}
               >
                 {String(selectedMode.workDuration).padStart(2, '0')}:00
               </div>
-              <span 
+              <span
                 className="text-xs font-medium block"
                 style={{ color: currentTheme.textSecondary }}
               >
-                {selectedMode.isChillMode ? 'Open Chill Period' : `${selectedMode.cycles} Cycles · ${selectedMode.breakDuration}m Rest`}
+                {selectedMode.isChillMode ? 'Open Chill Period' : `${cycleCount} Cycles · ${selectedMode.breakDuration}m Rest · ${cycleCount * selectedMode.workDuration + (cycleCount > 1 ? (cycleCount - 1) * selectedMode.breakDuration : 0)}m wall total`}
               </span>
             </div>
 
@@ -955,6 +1274,33 @@ export const TasksView: React.FC<TasksViewProps> = ({
                   Cycle Tasks ({queuedTaskIds.filter(Boolean).length}/{cycleCount})
                 </span>
                 <div className="flex items-center space-x-2 text-[10px] font-mono">
+                  {!selectedMode.isChillMode && (
+                    <span className="flex items-center space-x-1 mr-1">
+                      <button
+                        type="button"
+                        onClick={() => setLauncherCycles((c) => clampCycles(c - 1, 1))}
+                        disabled={cycleCount <= 1}
+                        className="w-5 h-5 rounded-lg liquid-glass border text-xs font-bold transition-all active:scale-95 cursor-pointer disabled:opacity-30"
+                        style={{ color: currentTheme.textSecondary }}
+                        title="Fewer cycles this session"
+                      >
+                        −
+                      </button>
+                      <span style={{ color: currentTheme.textSecondary }} title="Control blocks this session">
+                        {cycleCount}×
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setLauncherCycles((c) => clampCycles(c + 1, 1))}
+                        disabled={cycleCount >= 12}
+                        className="w-5 h-5 rounded-lg liquid-glass border text-xs font-bold transition-all active:scale-95 cursor-pointer disabled:opacity-30"
+                        style={{ color: currentTheme.textSecondary }}
+                        title="More cycles this session"
+                      >
+                        +
+                      </button>
+                    </span>
+                  )}
                   {uncompleted.length > 0 && (
                     <button
                       type="button"
@@ -1033,13 +1379,21 @@ export const TasksView: React.FC<TasksViewProps> = ({
             </div>
 
             {/* Launch Primary Action */}
+            <div className="text-[11px] font-mono text-center" style={{ color: currentTheme.textSecondary }}>
+              {(() => {
+                const n = queuedTaskIds.filter(Boolean).length || (inProgressTask ? 1 : 0);
+                const cycles = Math.max(1, Math.min(12, cycleCount));
+                const wall = sessionWallMinutesFull(selectedMode.workDuration, selectedMode.breakDuration, cycles, selectedMode.longBreakDuration, selectedMode.longBreakInterval);
+                return n > 0 ? `~${wall}m wall · ${cycles} block${cycles === 1 ? '' : 's'} · ${selectedMode.workDuration}m/${selectedMode.breakDuration}m` : 'Queue tasks to preview wall time';
+              })()}
+            </div>
             <button
               onClick={() => {
                 const filledQueue = queuedTaskIds.filter(Boolean);
                 const targetTaskIds = filledQueue.length > 0
                   ? filledQueue
                   : (inProgressTask ? [inProgressTask.id] : []);
-                onStartStandaloneSession(selectedMode, targetTaskIds);
+                onStartStandaloneSession(selectedMode, targetTaskIds, cycleCount);
               }}
               className="w-full py-3.5 px-4 rounded-2xl font-bold text-sm transition-all active:scale-95 shadow-xl flex items-center justify-center space-x-2 cursor-pointer"
               style={{
@@ -1050,8 +1404,8 @@ export const TasksView: React.FC<TasksViewProps> = ({
               <Zap className="w-4 h-4 fill-current" />
               <span>
                 {queuedTaskIds.filter(Boolean).length > 1
-                  ? `START FOCUS SESSION (${queuedTaskIds.filter(Boolean).length} TASKS)`
-                  : 'START FOCUS SESSION'}
+                  ? `START CONTROL SESSION (${queuedTaskIds.filter(Boolean).length} TASKS)`
+                  : 'START CONTROL SESSION'}
               </span>
             </button>
           </div>
@@ -1127,7 +1481,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
           {/* Backdrop */}
           <div 
             onClick={() => setIsModeModalOpen(false)} 
-            className="absolute inset-0 bg-black/70 transition-opacity animate-in fade-in duration-200" 
+            className="absolute inset-0 bg-transparent transition-opacity animate-in fade-in duration-200" 
           />
 
           {/* Modal Container */}
@@ -1146,7 +1500,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
                   <span 
                     className="text-xs font-mono font-bold uppercase tracking-wider text-sky-500"
                   >
-                    SELECT FOCUS MODE
+                    SELECT CONTROL MODE
                   </span>
                 </div>
                 <h2 
@@ -1182,16 +1536,28 @@ export const TasksView: React.FC<TasksViewProps> = ({
 
             {/* Modes Cards Grid */}
             <div className="space-y-2">
-              <div className="flex items-center justify-between text-[11px] font-mono" style={{ color: currentTheme.textSecondary }}>
+              <div className="flex items-center justify-between gap-2 text-[11px] font-mono" style={{ color: currentTheme.textSecondary }}>
                 <span>AVAILABLE STUDY MODES</span>
-                <span>Press keys [1 - {Math.min(9, modes.length)}] or arrows</span>
+                <span className="flex items-center gap-2">
+                  <span className="hidden sm:inline">Press keys [1 - {Math.min(9, modes.length)}] or arrows</span>
+                  <ModeViewToggle view={modePickerView} onChange={setModePickerView} theme={theme} />
+                </span>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-[300px] overflow-y-auto pr-1">
-                {modes.map((m, idx) => {
+              <div className={modePickerView === 'grid' ? 'grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-[300px] overflow-y-auto pr-1' : 'space-y-1.5 max-h-[300px] overflow-y-auto pr-1'}>
+                {modePickerEntries.map(({ label, m, idx }) => {
                   const isSelected = m.id === modalSelectedModeId;
                   return (
-                    <button
+                    <React.Fragment key={m.id}>
+                      {label && (
+                        <div
+                          className="sm:col-span-2 text-[10px] font-mono font-bold uppercase tracking-widest pt-1.5"
+                          style={{ color: currentTheme.textMuted }}
+                        >
+                          {label}
+                        </div>
+                      )}
+                      {modePickerView === 'grid' ? (                    <button
                       key={m.id}
                       type="button"
                       onClick={() => setModalSelectedModeId(m.id)}
@@ -1251,15 +1617,9 @@ export const TasksView: React.FC<TasksViewProps> = ({
 
                       {/* Mode Details */}
                       <div className="flex items-center space-x-2 text-[11px] font-mono opacity-80" style={{ color: currentTheme.textSecondary }}>
-                        <span>{m.workDuration}m Focus</span>
+                        <span>{m.workDuration}m Control</span>
                         <span>·</span>
                         <span>{m.isChillMode ? 'Chill' : `${m.breakDuration}m Rest`}</span>
-                        {!m.isChillMode && (
-                          <>
-                            <span>·</span>
-                            <span>{m.cycles} {m.cycles === 1 ? 'cycle' : 'cycles'}</span>
-                          </>
-                        )}
                       </div>
 
                       <p 
@@ -1269,10 +1629,125 @@ export const TasksView: React.FC<TasksViewProps> = ({
                         {m.description}
                       </p>
                     </button>
+                      ) : (
+                      <button
+                        type="button"
+                        onClick={() => setModalSelectedModeId(m.id)}
+                        className={`w-full p-2.5 rounded-xl flex items-center gap-2.5 text-left transition-all cursor-pointer border ${
+                          isSelected
+                            ? isDark
+                              ? 'bg-sky-500/15 border-sky-400'
+                              : 'bg-sky-50 border-sky-500'
+                            : 'liquid-glass border'
+                        }`}
+                        style={{
+                          borderColor: isSelected
+                            ? undefined
+                            : isDark
+                            ? 'rgba(255,255,255,0.08)'
+                            : 'rgba(0,0,0,0.06)',
+                        }}
+                      >
+                        <span
+                          className="p-1 rounded-lg shrink-0"
+                          style={{
+                            backgroundColor: `${m.color || '#38bdf8'}20`,
+                            color: m.color || '#38bdf8',
+                          }}
+                        >
+                          <DynamicIcon name={m.icon} className="w-3.5 h-3.5" />
+                        </span>
+                        <span className="flex-1 min-w-0">
+                          <span
+                            className="text-xs font-bold block truncate"
+                            style={{ color: currentTheme.textPrimary }}
+                          >
+                            {m.name}
+                          </span>
+                          <span
+                            className="text-[11px] font-mono opacity-70"
+                            style={{ color: currentTheme.textSecondary }}
+                          >
+                            {m.workDuration}m · {m.isChillMode ? 'Chill' : `${m.breakDuration}m rest`}
+                          </span>
+                        </span>
+                        {idx < 9 && (
+                          <kbd
+                            className="text-[10px] font-mono px-1.5 py-0.2 rounded liquid-glass opacity-70 shrink-0"
+                            style={{ color: currentTheme.textSecondary }}
+                          >
+                            {idx + 1}
+                          </kbd>
+                        )}
+                        <span
+                          className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 ${
+                            isSelected ? 'border-sky-500 bg-sky-500 text-white' : 'border-zinc-500/40'
+                          }`}
+                        >
+                          {isSelected && <Check className="w-2.5 h-2.5 stroke-[3]" />}
+                        </span>
+                      </button>
+                      )}
+                    </React.Fragment>
                   );
                 })}
               </div>
             </div>
+
+            {/* Cycles for this task (chosen here, stored on the task) */}
+            {(() => {
+              const modalMode = modes.find((m) => m.id === modalSelectedModeId) || selectedMode;
+              if (modalMode?.isChillMode) return null;
+              return (
+                <div
+                  className="px-4 py-3 rounded-2xl liquid-glass border flex items-center justify-between gap-3"
+                  style={{ borderColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)' }}
+                >
+                  <div className="min-w-0">
+                    <span
+                      className="text-xs font-bold block"
+                      style={{ color: currentTheme.textPrimary }}
+                    >
+                      Cycles for this task
+                    </span>
+                    <span
+                      className="text-[11px] block"
+                      style={{ color: currentTheme.textSecondary }}
+                    >
+                      How many control blocks run when you start this task.
+                    </span>
+                  </div>
+                  <div className="flex items-center space-x-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setPendingTaskCycles((c) => clampCycles(c - 1, 1))}
+                      disabled={pendingTaskCycles <= 1}
+                      className="w-7 h-7 rounded-xl liquid-glass border text-sm font-bold transition-all active:scale-95 cursor-pointer disabled:opacity-30"
+                      style={{ color: currentTheme.textPrimary }}
+                      title="Fewer cycles"
+                    >
+                      −
+                    </button>
+                    <span
+                      className="text-sm font-mono font-bold w-6 text-center"
+                      style={{ color: currentTheme.textPrimary }}
+                    >
+                      {pendingTaskCycles}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setPendingTaskCycles((c) => clampCycles(c + 1, 1))}
+                      disabled={pendingTaskCycles >= 12}
+                      className="w-7 h-7 rounded-xl liquid-glass border text-sm font-bold transition-all active:scale-95 cursor-pointer disabled:opacity-30"
+                      style={{ color: currentTheme.textPrimary }}
+                      title="More cycles"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Modal Bottom Actions */}
             <div className="pt-2 flex flex-col sm:flex-row items-center justify-between gap-3 border-t"
@@ -1304,10 +1779,10 @@ export const TasksView: React.FC<TasksViewProps> = ({
                     backgroundColor: currentTheme.accent,
                     color: currentTheme.accentText,
                   }}
-                  title="Start focus session now (Enter)"
+                  title="Start control session now (Enter)"
                 >
                   <Play className="w-3.5 h-3.5 fill-current" />
-                  <span>Start Focus Now</span>
+                  <span>Start Control Now</span>
                 </button>
               </div>
             </div>
@@ -1322,7 +1797,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 select-none">
           <div 
             onClick={() => setTaskForModeChange(null)} 
-            className="absolute inset-0 bg-black/70 transition-opacity animate-in fade-in duration-200" 
+            className="absolute inset-0 bg-transparent transition-opacity animate-in fade-in duration-200" 
           />
 
           <div
@@ -1351,10 +1826,23 @@ export const TasksView: React.FC<TasksViewProps> = ({
             </div>
 
             <div className="space-y-2 max-h-[280px] overflow-y-auto pr-1">
-              {modes.map((m) => {
-                const isSelected = (taskForModeChange.modeId || selectedModeId) === m.id;
-                return (
-                  <button
+              {(() => {
+                let prevLabel: string | null = null;
+                return orderedModes.map((m) => {
+                  const label = modeGroupLabel(m.folderId);
+                  const showLabel = showFolderLabels && label !== prevLabel;
+                  prevLabel = label;
+                  const isSelected = (taskForModeChange.modeId || selectedModeId) === m.id;
+                  return (
+                    <React.Fragment key={m.id}>
+                      {showLabel && (
+                        <div
+                          className="text-[10px] font-mono font-bold uppercase tracking-widest pt-1.5"
+                          style={{ color: currentTheme.textMuted }}
+                        >
+                          {label}
+                        </div>
+                      )}                  <button
                     key={m.id}
                     type="button"
                     onClick={() => {
@@ -1384,7 +1872,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
                           {m.name}
                         </span>
                         <span className="text-[11px] font-mono opacity-70" style={{ color: currentTheme.textSecondary }}>
-                          {m.workDuration}m Focus · {m.cycles} {m.cycles === 1 ? 'cycle' : 'cycles'}
+                          {m.workDuration}m Control
                         </span>
                       </div>
                     </div>
@@ -1394,9 +1882,11 @@ export const TasksView: React.FC<TasksViewProps> = ({
                         <Check className="w-3 h-3 stroke-[3]" />
                       </span>
                     )}
-                  </button>
-                );
-              })}
+                    </button>
+                    </React.Fragment>
+                  );
+                });
+              })()}
             </div>
           </div>
         </div>

@@ -6,6 +6,7 @@ import {
   partitionForReplace,
   resolveFlexTaskModes,
 } from '../src/services/flexTemplates';
+import { isBreakTitle } from '../src/services/scheduleTemplates';
 import { ScheduleBlock, StudyMode } from '../src/types';
 
 function makeMode(overrides: Partial<StudyMode> = {}): StudyMode {
@@ -363,6 +364,36 @@ describe('applyFlexTemplate', () => {
     expect(res.errors).toEqual([]);
     expect(res.blocks[0].modeName).toBe('Review 2026-10-12');
     expect(res.blocks[0].description).toBe('Says 2026-10-12 here.');
+  });
+});
+
+describe('isBreakTitle (B-16)', () => {
+  it('matches exact, prefixed, and suffixed break titles', () => {
+    expect(isBreakTitle('Break')).toBe(true);
+    expect(isBreakTitle('Long Break')).toBe(true);
+    expect(isBreakTitle('Break: wind down')).toBe(true);
+    expect(isBreakTitle('Rest — 10 min')).toBe(true);
+    expect(isBreakTitle('Lunch Break')).toBe(true);
+  });
+
+  it('does not match leading-verb control titles', () => {
+    expect(isBreakTitle('Break down 50 problems')).toBe(false);
+    expect(isBreakTitle('English 50')).toBe(false);
+    expect(isBreakTitle('')).toBe(false);
+  });
+
+  it('generates "Long Break" as rest, never control work', () => {
+    const { template } = parseFlexTemplate(
+      't',
+      '# Long Break\n## Time\n16:20-16:30\n## Blocking\nMode: {Rest Mode}\n'
+    );
+    const modes = [makeMode({ id: 'm-rest', name: 'Rest Mode' })];
+    const res = applyFlexTemplate(template, { date: '2026-10-12' }, { modes, nowMs: 1 });
+    expect(res.errors).toEqual([]);
+    expect(res.blocks).toHaveLength(1);
+    expect(res.blocks[0].workDuration).toBe(0);
+    expect(res.blocks[0].breakDuration).toBe(10);
+    expect(res.blocks[0].timerEnabled).toBe(false);
   });
 });
 

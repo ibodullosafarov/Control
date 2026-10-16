@@ -590,7 +590,7 @@ export const DayPlanMarkdownView: React.FC<DayPlanMarkdownViewProps> = ({
       {/* ═══ APPLY TEMPLATE MODAL ═══════════════════════════════════════════ */}
       {isApplyModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 select-none">
-          <div onClick={() => setIsApplyModalOpen(false)} className="absolute inset-0 bg-black/65 backdrop-blur-sm" />
+          <div onClick={() => setIsApplyModalOpen(false)} className="absolute inset-0 bg-transparent" />
           <div
             className="relative w-full max-w-lg p-6 rounded-3xl border shadow-2xl z-10 space-y-4 animate-modal-in max-h-[85vh] flex flex-col"
             style={{
@@ -724,7 +724,7 @@ export const DayPlanMarkdownView: React.FC<DayPlanMarkdownViewProps> = ({
       {/* ═══ TEMPLATES MANAGER MODAL ════════════════════════════════════════ */}
       {isManagerOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 select-none">
-          <div onClick={() => setIsManagerOpen(false)} className="absolute inset-0 bg-black/65 backdrop-blur-sm" />
+          <div onClick={() => setIsManagerOpen(false)} className="absolute inset-0 bg-transparent" />
           <div
             className="relative w-full max-w-2xl p-6 rounded-3xl border shadow-2xl z-10 space-y-4 animate-modal-in max-h-[85vh] flex flex-col"
             style={{

@@ -36,7 +36,7 @@ Pick one (first match wins):
 | Source | How |
 |---|---|
 | Environment | `GOOGLE_OAUTH_CLIENT_ID` (and `GOOGLE_OAUTH_CLIENT_SECRET` for Web-application clients) before launching Control |
-| Settings UI | Preferences → Google Calendar → **Enter Client ID**, plus the **Client Secret** field when your client needs one (stored in `~/.focus-app/google-oauth.json`) |
+| Settings UI | Preferences → Google Calendar → **Enter Client ID**, plus the **Client Secret** field when your client needs one (stored in `~/.control-app/google-oauth.json`) |
 
 Then click **Connect Google Calendar**. Your browser opens for consent
 (system browser, never a webview); Control listens on
@@ -59,7 +59,7 @@ Then click **Connect Google Calendar**. Your browser opens for consent
 >
 > **Still stuck?** Hit **Copy diagnostics** at the bottom of the Google Calendar
 > section and share the output — it contains error codes and the event log but
-> never tokens or secrets (`~/.focus-app/google-sync/diagnostics.log`).
+> never tokens or secrets (`~/.control-app/google-sync/diagnostics.log`).
 
 ## 3. How sync behaves
 
@@ -76,15 +76,15 @@ Then click **Connect Google Calendar**. Your browser opens for consent
   retried without the precondition); a remote **deletion** beats a pending
   local edit (the planner block is removed after you confirm the apply).
 - **Sync tokens advance only after the app confirms** the imported changes
-  were saved to `~/.focus-app/data.json`. A crash can repeat work but never
+  were saved to `~/.control-app/data.json`. A crash can repeat work but never
   loses acknowledged imports or creates duplicates (every push searches by the
   `controlBlockId` extended property before inserting).
-- **Triggers**: after connect, ~4 s after launch, window focus (debounced),
+- **Triggers**: after connect, ~4 s after launch, window control (debounced),
   every 5 minutes, ~1.5 s after local saves, on reconnect, and **Sync Now**.
 - **Full Resync** drops all sync tokens and re-imports — use it if the two
   sides ever look inconsistent.
 
-## 4. Where state lives (all local, all in `~/.focus-app/`)
+## 4. Where state lives (all local, all in `~/.control-app/`)
 
 | File | Contents |
 |---|---|

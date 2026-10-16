@@ -9,5 +9,5 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["electron/**/*", "src/types/**/*", "src/services/defaultData.ts", "src/services/planner.ts", "src/services/scheduleTemplates.ts", "src/services/autoExecPolicy.ts", "src/services/taskTitles.ts"]
+  "include": ["electron/**/*", "src/types/**/*", "src/services/defaultData.ts", "src/services/planner.ts", "src/services/scheduleTemplates.ts", "src/services/autoExecPolicy.ts", "src/services/taskTitles.ts", "src/services/musicPlaylist.ts", "src/services/legacyFields.ts"]
 }

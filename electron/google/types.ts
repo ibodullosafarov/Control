@@ -110,7 +110,7 @@ export interface CalendarSyncCursor {
   timeMin?: string;
 }
 
-/** Persisted sync state (~/.focus-app/google-sync/state.json). */
+/** Persisted sync state (~/.control-app/google-sync/state.json). */
 export interface SyncState {
   version: number;
   connectedAt?: string;

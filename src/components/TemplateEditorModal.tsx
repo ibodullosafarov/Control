@@ -92,7 +92,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/65 backdrop-blur-sm" onClick={() => !isSaving && onClose()} />
+      <div className="absolute inset-0 bg-transparent" onClick={() => !isSaving && onClose()} />
       <div
         className="relative w-full max-w-4xl max-h-[90vh] flex flex-col p-6 rounded-3xl liquid-glass border space-y-4 animate-modal-in"
         style={{ borderColor: border }}

@@ -113,8 +113,8 @@ function pngFromBundle(bundlePath) {
     }
 }
 const HOSTS_FILE = '/etc/hosts';
-const BLOCK_START_MARKER = '# --- BEGIN FOCUS MANAGED BLOCKLIST ---';
-const BLOCK_END_MARKER = '# --- END FOCUS MANAGED BLOCKLIST ---';
+const BLOCK_START_MARKER = '# --- BEGIN CONTROL MANAGED BLOCKLIST ---';
+const BLOCK_END_MARKER = '# --- END CONTROL MANAGED BLOCKLIST ---';
 const SELFCONTROL_CLI_PATH = '/Applications/SelfControl.app/Contents/MacOS/selfcontrol-cli';
 class DistractionBlocker {
     activeDomains = [];
@@ -162,7 +162,7 @@ class DistractionBlocker {
             // Build new managed block section
             const entries = [
                 BLOCK_START_MARKER,
-                '# Managed automatically by Focus. Do not edit manually.',
+                '# Managed automatically by Control. Do not edit manually.',
             ];
             for (const domain of domains) {
                 const clean = domain.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
@@ -178,7 +178,7 @@ class DistractionBlocker {
             entries.push(BLOCK_END_MARKER);
             const newContent = `${cleanHosts}\n\n${entries.join('\n')}\n`;
             // Write to temp file first
-            const tempPath = path.join('/tmp', `hosts_focus_${Date.now()}`);
+            const tempPath = path.join('/tmp', `hosts_control_${Date.now()}`);
             fs.writeFileSync(tempPath, newContent, 'utf-8');
             // Try writing directly if permissions allow, or use AppleScript privilege prompt
             try {
@@ -215,7 +215,7 @@ class DistractionBlocker {
                 const regex = new RegExp(`${BLOCK_START_MARKER}[\\s\\S]*?${BLOCK_END_MARKER}\n?`, 'g');
                 if (regex.test(currentHosts)) {
                     const cleanHosts = currentHosts.replace(regex, '').trim() + '\n';
-                    const tempPath = path.join('/tmp', `hosts_focus_clean_${Date.now()}`);
+                    const tempPath = path.join('/tmp', `hosts_control_clean_${Date.now()}`);
                     fs.writeFileSync(tempPath, cleanHosts, 'utf-8');
                     try {
                         fs.writeFileSync(HOSTS_FILE, cleanHosts, 'utf-8');
@@ -251,7 +251,7 @@ class DistractionBlocker {
         }
         try {
             const endDate = new Date(Date.now() + minutes * 60 * 1000).toISOString();
-            const blocklistPath = path.join('/tmp', 'focus_selfcontrol_blocklist.txt');
+            const blocklistPath = path.join('/tmp', 'control_selfcontrol_blocklist.txt');
             fs.writeFileSync(blocklistPath, domains.join('\n'), 'utf-8');
             const cmd = `"${SELFCONTROL_CLI_PATH}" start --blocklist "${blocklistPath}" --enddate "${endDate}"`;
             await execAsync(cmd);
@@ -292,7 +292,7 @@ class DistractionBlocker {
 exports.DistractionBlocker = DistractionBlocker;
 // ─────────────────────────────────────────────────────────────────────────────
 // AppBlocker: Native macOS Application Blocking Engine
-// Kills running blocked apps and polls to re-kill them during focus sessions
+// Kills running blocked apps and polls to re-kill them during control sessions
 // ─────────────────────────────────────────────────────────────────────────────
 const APP_SEARCH_DIRS = () => [
     '/Applications',

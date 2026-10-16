@@ -1,14 +1,13 @@
 import React from 'react';
-import { 
-  CheckSquare, Timer, Shield, Calendar, Sliders, BarChart3, Settings, 
-  Moon, Sun, Power, Search, Music, Sparkles 
+import {
+  CheckSquare, Timer, Shield, Calendar, Sliders, BarChart3, Settings,
+  Moon, Sun, Power, Search, Users, StickyNote
 } from 'lucide-react';
 import { ThemeId, ActiveSessionState } from '../types';
 import { THEMES } from '../styles/themes';
-import { AmbientSoundType } from '../services/ambientAudio';
 import appIcon from '../assets/icon.png';
 
-export type NavTab = 'tasks' | 'launcher' | 'timer' | 'modes' | 'planner' | 'blocker' | 'history' | 'settings';
+export type NavTab = 'tasks' | 'launcher' | 'timer' | 'modes' | 'planner' | 'blocker' | 'history' | 'settings' | 'rooms' | 'notes';
 
 interface HeaderProps {
   activeTab: NavTab;
@@ -18,8 +17,6 @@ interface HeaderProps {
   onToggleTheme: () => void;
   onRequestLeave: () => void;
   onOpenCommandPalette: () => void;
-  currentSound: AmbientSoundType | null;
-  onOpenSoundControl: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -30,8 +27,6 @@ export const Header: React.FC<HeaderProps> = ({
   onToggleTheme,
   onRequestLeave,
   onOpenCommandPalette,
-  currentSound,
-  onOpenSoundControl,
 }) => {
   const currentTheme = THEMES[theme] || THEMES.serika;
   const isDark = currentTheme.isDark;
@@ -54,7 +49,7 @@ export const Header: React.FC<HeaderProps> = ({
         <button
           onClick={() => onSelectTab('tasks')}
           className="flex items-center space-x-2.5 px-3 py-1.5 rounded-full liquid-glass border transition-all active:scale-95 cursor-pointer group"
-          title="Focus Studio"
+          title="Control Studio"
         >
           <img
             src={appIcon}
@@ -122,7 +117,7 @@ export const Header: React.FC<HeaderProps> = ({
               ? 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5 border border-transparent'
               : 'text-zinc-600 hover:text-zinc-900 hover:bg-black/5 border border-transparent'
           }`}
-          title="Tasks & Focus Hub [1]"
+          title="Tasks & Control Hub [1]"
         >
           <CheckSquare className="w-3.5 h-3.5 text-sky-500" />
           <span>Tasks</span>
@@ -140,7 +135,7 @@ export const Header: React.FC<HeaderProps> = ({
               ? 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5 border border-transparent'
               : 'text-zinc-600 hover:text-zinc-900 hover:bg-black/5 border border-transparent'
           }`}
-          title="Focus Timer [2]"
+          title="Control Timer [2]"
         >
           <Timer className="w-3.5 h-3.5 text-emerald-500" />
           <span>Timer</span>
@@ -212,39 +207,54 @@ export const Header: React.FC<HeaderProps> = ({
               ? 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5 border border-transparent'
               : 'text-zinc-600 hover:text-zinc-900 hover:bg-black/5 border border-transparent'
           }`}
-          title="Focus Analytics [6]"
+          title="Control Analytics [6]"
         >
           <BarChart3 className="w-3.5 h-3.5 text-cyan-500" />
           <span>Stats</span>
         </button>
+
+        {/* Tab: Control Rooms */}
+        <button
+          onClick={() => onSelectTab('rooms')}
+          className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all duration-200 cursor-pointer ${
+            activeTab === 'rooms'
+              ? isDark
+                ? 'bg-white/15 text-white shadow-[inset_0_1px_1px_rgba(255,255,255,0.25),0_4px_12px_rgba(0,0,0,0.3)] border border-white/15'
+                : 'bg-white text-zinc-900 shadow-md border border-black/8 font-bold'
+              : isDark
+              ? 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5 border border-transparent'
+              : 'text-zinc-600 hover:text-zinc-900 hover:bg-black/5 border border-transparent'
+          }`}
+          title="Control Rooms [7]"
+        >
+          <Users className="w-3.5 h-3.5 text-orange-500" />
+          <span>Rooms</span>
+        </button>
+
+        {/* Tab: Notes */}
+        <button
+          onClick={() => onSelectTab('notes')}
+          className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all duration-200 cursor-pointer ${
+            activeTab === 'notes'
+              ? isDark
+                ? 'bg-white/15 text-white shadow-[inset_0_1px_1px_rgba(255,255,255,0.25),0_4px_12px_rgba(0,0,0,0.3)] border border-white/15'
+                : 'bg-white text-zinc-900 shadow-md border border-black/8 font-bold'
+              : isDark
+              ? 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5 border border-transparent'
+              : 'text-zinc-600 hover:text-zinc-900 hover:bg-black/5 border border-transparent'
+          }`}
+          title="Notes [8]"
+        >
+          <StickyNote className="w-3.5 h-3.5 text-amber-500" />
+          <span>Notes</span>
+        </button>
       </nav>
 
-      {/* Right: Soundscape Player, Theme Toggle, Settings & Exit */}
+      {/* Right: Theme Toggle, Settings & Exit */}
       <div
         className="flex items-center space-x-2"
         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       >
-        {/* Ambient Soundscape Player Button with Animated Equalizer Bars */}
-        <button
-          onClick={onOpenSoundControl}
-          className={`p-2 rounded-full liquid-glass border transition-all active:scale-95 cursor-pointer flex items-center justify-center ${
-            currentSound ? 'text-sky-400 ring-2 ring-sky-500/40 bg-sky-500/10' : 'hover:scale-105'
-          }`}
-          style={{ color: currentSound ? undefined : currentTheme.textSecondary }}
-          title={currentSound ? `Ambient Audio Active (${currentSound})` : 'Zen Ambient Soundscapes'}
-        >
-          {currentSound ? (
-            <div className="flex items-end justify-center space-x-[2px] h-3.5 w-3.5 px-[1px]">
-              <span className="w-[2px] bg-sky-400 rounded-full animate-eq-1" />
-              <span className="w-[2px] bg-sky-400 rounded-full animate-eq-2" />
-              <span className="w-[2px] bg-sky-400 rounded-full animate-eq-3" />
-              <span className="w-[2px] bg-sky-400 rounded-full animate-eq-4" />
-            </div>
-          ) : (
-            <Music className="w-3.5 h-3.5" />
-          )}
-        </button>
-
         {/* Theme Toggle (Light / Dark) with Smooth Spin */}
         <button
           onClick={onToggleTheme}
@@ -267,7 +277,7 @@ export const Header: React.FC<HeaderProps> = ({
             color: activeTab === 'settings' ? currentTheme.accent : currentTheme.textSecondary,
             backgroundColor: activeTab === 'settings' ? (isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.08)') : undefined,
           }}
-          title="Settings [7]"
+          title="Settings [9]"
         >
           <Settings className="w-3.5 h-3.5 hover:rotate-90 transition-transform duration-500" />
         </button>

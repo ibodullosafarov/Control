@@ -2,7 +2,7 @@ import { BrowserWindow, ipcMain, safeStorage, shell } from 'electron';
 import * as os from 'os';
 import * as path from 'path';
 import {
-  FocusAppData,
+  ControlAppData,
   GoogleApplyMutations,
   GoogleApplyResult,
   GoogleCalendarOption,
@@ -39,34 +39,34 @@ import { EnginePorts, SyncLogger, emptySyncState } from './types';
  */
 
 export const GOOGLE_CHANNELS = {
-  getStatus: 'focus:google:getStatus',
-  getClientState: 'focus:google:getClientState',
-  setClientId: 'focus:google:setClientId',
-  clearClientId: 'focus:google:clearClientId',
-  connect: 'focus:google:connect',
-  disconnect: 'focus:google:disconnect',
-  listCalendars: 'focus:google:listCalendars',
-  selectCalendar: 'focus:google:selectCalendar',
-  getDiagnostics: 'focus:google:getDiagnostics',
-  syncNow: 'focus:google:syncNow',
-  applyChanges: 'focus:google:applyChanges',
-  notifyOnline: 'focus:google:notifyOnline',
-  statusPush: 'focus:google:status',
-  applyPush: 'focus:google:apply',
+  getStatus: 'control:google:getStatus',
+  getClientState: 'control:google:getClientState',
+  setClientId: 'control:google:setClientId',
+  clearClientId: 'control:google:clearClientId',
+  connect: 'control:google:connect',
+  disconnect: 'control:google:disconnect',
+  listCalendars: 'control:google:listCalendars',
+  selectCalendar: 'control:google:selectCalendar',
+  getDiagnostics: 'control:google:getDiagnostics',
+  syncNow: 'control:google:syncNow',
+  applyChanges: 'control:google:applyChanges',
+  notifyOnline: 'control:google:notifyOnline',
+  statusPush: 'control:google:status',
+  applyPush: 'control:google:apply',
 } as const;
 
 const SYNC_INTERVAL_MS = 5 * 60 * 1000;
 const STARTUP_SYNC_DELAY_MS = 4000;
-const FOCUS_SYNC_DELAY_MS = 3000;
+const CONTROL_SYNC_DELAY_MS = 3000;
 const LOCAL_SAVE_DEBOUNCE_MS = 1500;
 const APPLY_REPLY_TIMEOUT_MS = 20_000;
 
 export interface GoogleSyncServiceOptions {
-  /** Currently focused app window (source of renderer sends). */
+  /** Currently controlled app window (source of renderer sends). */
   getWindow(): BrowserWindow | null;
   /** Current persisted app data (main-process read cache). */
-  getData(): FocusAppData;
-  /** Directory for tokens/state/client config. Defaults to ~/.focus-app. */
+  getData(): ControlAppData;
+  /** Directory for tokens/state/client config. Defaults to ~/.control-app. */
   dataDir?: string;
   env?: NodeJS.ProcessEnv;
   fetchFn?: typeof fetch;
@@ -125,7 +125,7 @@ export class GoogleSyncService {
   >();
 
   constructor(private readonly opts: GoogleSyncServiceOptions) {
-    this.dataDir = opts.dataDir ?? path.join(os.homedir(), '.focus-app');
+    this.dataDir = opts.dataDir ?? path.join(os.homedir(), '.control-app');
     this.env = opts.env ?? process.env;
     const cipher = makeSafeStorageCipher();
 
@@ -164,7 +164,13 @@ export class GoogleSyncService {
       logger: gcalLogger,
       now: () => Date.now(),
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      get timeZone(): string {
+        try {
+          return Intl.DateTimeFormat().resolvedOptions().timeZone;
+        } catch {
+          return 'UTC';
+        }
+      },
       getDefaultMode: () => {
         const mode = this.opts.getData().modes?.[0];
         return mode ? { id: mode.id, name: mode.name, icon: mode.icon, color: mode.color } : null;
@@ -589,7 +595,7 @@ export class GoogleSyncService {
 
   onWindowFocus(): void {
     if (!this.isConnected()) return;
-    this.scheduleSync(FOCUS_SYNC_DELAY_MS);
+    this.scheduleSync(CONTROL_SYNC_DELAY_MS);
   }
 
   /** Coalescing scheduler: one pending timer, skipped while a run is active. */

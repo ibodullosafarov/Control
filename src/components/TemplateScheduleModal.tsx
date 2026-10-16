@@ -38,7 +38,7 @@ interface TemplateScheduleModalProps {
   onConfirm: (
     date: string,
     blocks: ScheduleBlock[],
-    meta: { templateName: string; templateTitle: string }
+    meta: { templateName: string; templateTitle: string; mode?: 'add' | 'replace' }
   ) => Promise<string | null>;
 }
 
@@ -64,6 +64,9 @@ export const TemplateScheduleModal: React.FC<TemplateScheduleModalProps> = ({
   const [overrides, setOverrides] = useState<Record<number, SessionOverride>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // B-11: sequencing templates get the same Add-alongside vs Replace choice
+  // the flex flow already has — re-apply can replace instead of duplicating.
+  const [applyMode, setApplyMode] = useState<'add' | 'replace'>('add');
 
   const setOverride = (order: number, patch: Partial<SessionOverride>) => {
     setOverrides((prev) => ({ ...prev, [order]: { ...(prev[order] || {}), ...patch } }));
@@ -82,7 +85,7 @@ export const TemplateScheduleModal: React.FC<TemplateScheduleModalProps> = ({
   const blocked = parseErrors.length > 0 || result.errors.length > 0 || isSubmitting;
   const hasConflicts = result.conflicts.length > 0;
 
-  // Single-block modes should match their focus length (multi-cycle exempt).
+  // Single-block modes should match their control length (multi-cycle exempt).
   // Warning only — fix by editing Minutes above or snapping here.
   const mismatches = useMemo(
     () => validateSingleBlockDurations(result.blocks, modes),
@@ -92,7 +95,7 @@ export const TemplateScheduleModal: React.FC<TemplateScheduleModalProps> = ({
     const mismatch = mismatches.find((m) => m.index === mismatchIndex);
     const session = template.sessions[mismatchIndex];
     if (!mismatch || !session) return;
-    setOverride(session.order, { durationMinutes: mismatch.focusMinutes });
+    setOverride(session.order, { durationMinutes: mismatch.controlMinutes });
   };
 
   const handleConfirm = async () => {
@@ -100,9 +103,18 @@ export const TemplateScheduleModal: React.FC<TemplateScheduleModalProps> = ({
     setIsSubmitting(true);
     setSubmitError(null);
     try {
-      const error = await onConfirm(date, result.blocks, {
+      // B-11: fresh IDs + fresh appliedAt at confirm time — the preview may
+      // have been open for minutes, and preview-time stamps would be stale.
+      const appliedAt = new Date().toISOString();
+      const freshBlocks = result.blocks.map((b) => ({
+        ...b,
+        id: `block-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        originTemplateAppliedAt: appliedAt,
+      }));
+      const error = await onConfirm(date, freshBlocks, {
         templateName: template.name,
         templateTitle: template.title,
+        mode: applyMode,
       });
       if (error) {
         setSubmitError(error);
@@ -124,7 +136,7 @@ export const TemplateScheduleModal: React.FC<TemplateScheduleModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/65 backdrop-blur-sm" onClick={() => !isSubmitting && onClose()} />
+      <div className="absolute inset-0 bg-transparent" onClick={() => !isSubmitting && onClose()} />
       <div
         className="relative w-full max-w-2xl max-h-[88vh] overflow-y-auto p-6 rounded-3xl liquid-glass border space-y-4 animate-modal-in"
         style={{ borderColor: cardBorder(currentTheme.isDark) }}
@@ -229,7 +241,7 @@ export const TemplateScheduleModal: React.FC<TemplateScheduleModalProps> = ({
             const ov = overrides[s.order] || {};
             const preview = result.blocks[i];
             const effTimer = ov.timer ?? s.timer ?? (s.kind === 'break' ? false : true);
-            const effFocus = ov.focusMode !== undefined ? ov.focusMode : s.focusMode;
+            const effControl = ov.controlMode !== undefined ? ov.controlMode : s.controlMode;
             return (
               <div key={s.order} className="p-3.5 rounded-2xl liquid-glass-card border space-y-2.5">
                 <div className="flex items-center justify-between gap-2">
@@ -302,13 +314,13 @@ export const TemplateScheduleModal: React.FC<TemplateScheduleModalProps> = ({
                   </label>
                   <label className="block">
                     <span className="text-[10px] opacity-70" style={{ color: currentTheme.textSecondary }}>
-                      Focus
+                      Control
                     </span>
                     <select
-                      value={effFocus === null || effFocus === undefined ? '' : effFocus ? 'on' : 'off'}
+                      value={effControl === null || effControl === undefined ? '' : effControl ? 'on' : 'off'}
                       onChange={(e) =>
                         setOverride(s.order, {
-                          focusMode: e.target.value === '' ? null : e.target.value === 'on',
+                          controlMode: e.target.value === '' ? null : e.target.value === 'on',
                         })
                       }
                       className="w-full mt-0.5 px-2 py-1 rounded-lg liquid-glass-input border text-xs outline-none cursor-pointer"
@@ -375,23 +387,36 @@ export const TemplateScheduleModal: React.FC<TemplateScheduleModalProps> = ({
           </div>
         )}
 
+        {/* Warnings: density, silent mode fallback, preserved keys */}
+        {(result as unknown as { warnings?: string[] }).warnings != null && ((result as unknown as { warnings?: string[] }).warnings || []).length > 0 && result.errors.length === 0 && (
+          <div className="p-4 rounded-2xl border border-sky-500/30 bg-sky-500/10 space-y-1.5">
+            <div className="flex items-center space-x-2 text-xs font-bold text-sky-500">
+              <AlertTriangle className="w-4 h-4" />
+              <span>Check before generating</span>
+            </div>
+            {((result as unknown as { warnings?: string[] }).warnings || []).map((w, i) => (
+              <p key={i} className="text-[11px] leading-relaxed" style={{ color: currentTheme.textSecondary }}>{w}</p>
+            ))}
+          </div>
+        )}
+
         {mismatches.length > 0 && result.errors.length === 0 && (
           <div className="p-4 rounded-2xl border border-amber-500/30 bg-amber-500/10 space-y-2">
             <div className="flex items-center space-x-2 text-xs font-bold text-amber-500">
               <AlertTriangle className="w-4 h-4" />
-              <span>Session length differs from focus length</span>
+              <span>Session length differs from control length</span>
             </div>
             {mismatches.map((m) => (
               <div key={m.index} className="flex items-center justify-between gap-2 text-[11px]">
                 <p className="leading-relaxed" style={{ color: currentTheme.textSecondary }}>
                   “{m.title}” is scheduled {m.eventMinutes}m, but single-block mode {m.modeName}{' '}
-                  focuses {m.focusMinutes}m. Adjust Minutes above, or snap:
+                  controls {m.controlMinutes}m. Adjust Minutes above, or snap:
                 </p>
                 <button
                   onClick={() => snapMismatch(m.index)}
                   className="px-2.5 py-1 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-500 text-[11px] font-bold hover:bg-amber-500/30 transition-all cursor-pointer shrink-0"
                 >
-                  Snap to {m.focusMinutes}m
+                  Snap to {m.controlMinutes}m
                 </button>
               </div>
             ))}
@@ -412,6 +437,25 @@ export const TemplateScheduleModal: React.FC<TemplateScheduleModalProps> = ({
         {submitError && (
           <div className="px-3.5 py-2 rounded-xl text-[11px] font-semibold bg-rose-500/15 text-rose-400 border border-rose-500/30">
             {submitError}
+          </div>
+        )}
+
+        {/* Apply mode: add alongside vs replace (B-11 parity with flex flow) */}
+        {result.errors.length === 0 && result.blocks.length > 0 && (
+          <div className="flex items-center gap-2 text-[11px]" style={{ color: currentTheme.textSecondary }}>
+            <span className="font-mono uppercase tracking-wider">Apply:</span>
+            <button
+              onClick={() => setApplyMode('add')}
+              className={`px-2.5 py-1 rounded-lg border font-bold ${applyMode === 'add' ? 'bg-sky-500/20 border-sky-500/40 text-sky-400' : 'opacity-60'}`}
+            >
+              Add alongside
+            </button>
+            <button
+              onClick={() => setApplyMode('replace')}
+              className={`px-2.5 py-1 rounded-lg border font-bold ${applyMode === 'replace' ? 'bg-amber-500/20 border-amber-500/40 text-amber-500' : 'opacity-60'}`}
+            >
+              Replace day
+            </button>
           </div>
         )}
 
@@ -450,6 +494,7 @@ export const TemplateScheduleModal: React.FC<TemplateScheduleModalProps> = ({
         <p className="text-[10px] opacity-60 text-center" style={{ color: currentTheme.textSecondary }}>
           <CheckCircle2 className="w-3 h-3 inline mr-1" />
           Sessions become ordinary Day Planner events — editable, startable, and synced like any other.
+          Events never start by themselves unless Automatic Control Execution is on in Settings.
         </p>
       </div>
     </div>

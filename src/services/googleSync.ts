@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import {
   DayPlan,
-  FocusAppData,
+  ControlAppData,
   GoogleApplyMutations,
   GoogleApplyResult,
   GoogleSyncStatus,
@@ -55,11 +55,11 @@ class GoogleSyncClient {
 
   /** Idempotent: attaches status + apply listeners (Electron only). */
   init(): () => void {
-    if (this.initialized || !window.focusAPI?.googleCalendar) {
+    if (this.initialized || !window.controlAPI?.googleCalendar) {
       return () => undefined;
     }
     this.initialized = true;
-    const api = window.focusAPI.googleCalendar;
+    const api = window.controlAPI.googleCalendar;
 
     const unsubStatus = api.onStatus((status) => this.setStatus(status));
     const unsubApply = api.onApplyChanges(async (mutations) => {
@@ -81,7 +81,7 @@ class GoogleSyncClient {
     };
   }
 
-  /** App registers the routine that folds mutations into FocusAppData. */
+  /** App registers the routine that folds mutations into ControlAppData. */
   registerApplyHandler(handler: ApplyHandler): () => void {
     this.applyHandler = handler;
     return () => {
@@ -125,7 +125,7 @@ function emptyPlan(date: string): DayPlan {
 }
 
 /**
- * Apply sync mutations to FocusAppData (immutable).
+ * Apply sync mutations to ControlAppData (immutable).
  *
  * - An upsert removes the block from whatever plan currently holds it (an
  *   event whose date moved arrives under its new date) and inserts/merges it
@@ -137,9 +137,9 @@ function emptyPlan(date: string): DayPlan {
  *   existing block.
  */
 export function applyMutationsToData(
-  data: FocusAppData,
+  data: ControlAppData,
   mutations: GoogleApplyMutations
-): FocusAppData {
+): ControlAppData {
   if (!mutations || (!mutations.upserts?.length && !mutations.removals?.length)) {
     return data;
   }

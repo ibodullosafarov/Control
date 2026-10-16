@@ -12,7 +12,7 @@ import {
 const tmpDirs: string[] = [];
 
 function tmpDir(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'focus-gcal-diag-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'control-gcal-diag-'));
   tmpDirs.push(dir);
   return dir;
 }

@@ -1,11 +1,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { exec, execSync } from 'child_process';
+import { exec, execFile, execSync } from 'child_process';
 import { promisify } from 'util';
 import { BlockingStrategy, BlockerStatus, AppBlockerStatus, InstalledAppInfo } from '../src/types';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([
@@ -79,8 +80,13 @@ function pngFromBundle(bundlePath: string): string | null {
 }
 
 const HOSTS_FILE = '/etc/hosts';
-export const BLOCK_START_MARKER = '# --- BEGIN FOCUS MANAGED BLOCKLIST ---';
-export const BLOCK_END_MARKER = '# --- END FOCUS MANAGED BLOCKLIST ---';
+export const BLOCK_START_MARKER = '# --- BEGIN CONTROL MANAGED BLOCKLIST ---';
+export const BLOCK_END_MARKER = '# --- END CONTROL MANAGED BLOCKLIST ---';
+/** Pre-rename markers — still recognized (and cleaned up) so an old managed
+ *  section left in /etc/hosts is never orphaned. New sections always use the
+ *  markers above. */
+export const LEGACY_BLOCK_START_MARKER = '# --- BEGIN FOCUS MANAGED BLOCKLIST ---';
+export const LEGACY_BLOCK_END_MARKER = '# --- END FOCUS MANAGED BLOCKLIST ---';
 const SELFCONTROL_CLI_PATH = '/Applications/SelfControl.app/Contents/MacOS/selfcontrol-cli';
 
 // ── Pure, unit-tested helpers ──────────────────────────────────────────────
@@ -113,11 +119,16 @@ export async function runPrivilegedShell(
   await execFn(command);
 }
 
+/** Shell-escape one argument for /bin/sh double-quote context. */
+export function shellQuote(s: string): string {
+  return `"${s.replace(/(["$`\\])/g, '\\$1')}"`;
+}
+
 /** Managed block section for exactly these domains (normalized). */
 export function buildManagedSection(domains: string[]): string {
   const lines: string[] = [
     BLOCK_START_MARKER,
-    '# Managed automatically by Focus. Do not edit manually.',
+    '# Managed automatically by Control. Do not edit manually.',
   ];
   for (const domain of domains) {
     const clean = domain.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
@@ -133,20 +144,19 @@ export function buildManagedSection(domains: string[]): string {
   return lines.join('\n');
 }
 
-const MANAGED_SECTION_RE = new RegExp(
-  `${BLOCK_START_MARKER}[\\s\\S]*?${BLOCK_END_MARKER}`
+/** Matches a managed section written by any app version (current or pre-rename). */
+const ANY_MANAGED_SECTION_RE = new RegExp(
+  `(?:${BLOCK_START_MARKER}|${LEGACY_BLOCK_START_MARKER})[\\s\\S]*?(?:${BLOCK_END_MARKER}|${LEGACY_BLOCK_END_MARKER})`
 );
 
 /** True when a managed section is present at all (stop is a no-op otherwise). */
 export function hasManagedSection(hostsContent: string): boolean {
-  return MANAGED_SECTION_RE.test(hostsContent);
+  return ANY_MANAGED_SECTION_RE.test(hostsContent);
 }
 
 /** True when the file already blocks exactly these domains (skip, no prompt). */
 export function hostsAlreadyBlocked(currentHosts: string, domains: string[]): boolean {
-  const match = currentHosts.match(
-    new RegExp(`${BLOCK_START_MARKER}[\\s\\S]*?${BLOCK_END_MARKER}`)
-  );
+  const match = currentHosts.match(ANY_MANAGED_SECTION_RE);
   if (!match) return false;
   return match[0].trim() === buildManagedSection(domains).trim();
 }
@@ -154,7 +164,7 @@ export function hostsAlreadyBlocked(currentHosts: string, domains: string[]): bo
 /** Full hosts content with the managed section (re)built for these domains. */
 export function buildHostsContent(currentHosts: string, domains: string[]): string {
   const cleanHosts = currentHosts
-    .replace(new RegExp(`${BLOCK_START_MARKER}[\\s\\S]*?${BLOCK_END_MARKER}\n?`, 'g'), '')
+    .replace(new RegExp(ANY_MANAGED_SECTION_RE.source, 'g'), '')
     .trim();
   return `${cleanHosts}\n\n${buildManagedSection(domains)}\n`;
 }
@@ -163,7 +173,7 @@ export function buildHostsContent(currentHosts: string, domains: string[]): stri
 export function stripManagedSection(currentHosts: string): string {
   return (
     currentHosts
-      .replace(new RegExp(`${BLOCK_START_MARKER}[\\s\\S]*?${BLOCK_END_MARKER}\n?`, 'g'), '')
+      .replace(new RegExp(ANY_MANAGED_SECTION_RE.source, 'g'), '')
       .trim() + '\n'
   );
 }
@@ -193,7 +203,9 @@ export class DistractionBlocker {
   }
 
   async startBlocking(domains: string[], strategy: BlockingStrategy = 'dynamic_hosts'): Promise<{ success: boolean; error?: string }> {
-    if (!domains || domains.length === 0 || strategy === 'none') {
+    if (!Array.isArray(domains)) return { success: false, error: 'Invalid blocklist.' };
+    domains = domains.filter((d) => typeof d === 'string' && d.trim()).slice(0, 500);
+    if (domains.length === 0 || strategy === 'none') {
       await this.stopBlocking();
       return { success: true };
     }
@@ -227,7 +239,7 @@ export class DistractionBlocker {
       const newContent = buildHostsContent(currentHosts, domains);
 
       // Write to temp file first
-      const tempPath = path.join('/tmp', `hosts_focus_${Date.now()}`);
+      const tempPath = path.join('/tmp', `hosts_control_${Date.now()}`);
       fs.writeFileSync(tempPath, newContent, 'utf-8');
 
       // Try writing directly if permissions allow, else escalate exactly once.
@@ -262,7 +274,7 @@ export class DistractionBlocker {
         const currentHosts = fs.readFileSync(HOSTS_FILE, 'utf-8');
         if (hasManagedSection(currentHosts)) {
           const cleanHosts = stripManagedSection(currentHosts);
-          const tempPath = path.join('/tmp', `hosts_focus_clean_${Date.now()}`);
+          const tempPath = path.join('/tmp', `hosts_control_clean_${Date.now()}`);
           fs.writeFileSync(tempPath, cleanHosts, 'utf-8');
 
           try {
@@ -292,13 +304,18 @@ export class DistractionBlocker {
   }
 
   async startSelfControl(domains: string[], minutes: number): Promise<{ success: boolean; error?: string }> {
+    if (!Array.isArray(domains)) return { success: false, error: 'Invalid blocklist.' };
+    if (!Number.isFinite(minutes) || minutes <= 0 || minutes > 24 * 60) {
+      return { success: false, error: 'Invalid duration (1–1440 minutes).' };
+    }
+    domains = domains.filter((d) => typeof d === 'string' && d.trim()).slice(0, 500);
     if (!this.isSelfControlInstalled()) {
       return { success: false, error: 'SelfControl.app is not installed at /Applications/SelfControl.app' };
     }
 
     try {
       const endDate = new Date(Date.now() + minutes * 60 * 1000).toISOString();
-      const blocklistPath = path.join('/tmp', 'focus_selfcontrol_blocklist.txt');
+      const blocklistPath = path.join('/tmp', 'control_selfcontrol_blocklist.txt');
       fs.writeFileSync(blocklistPath, domains.join('\n'), 'utf-8');
 
       const cmd = `"${SELFCONTROL_CLI_PATH}" start --blocklist "${blocklistPath}" --enddate "${endDate}"`;
@@ -340,7 +357,7 @@ export class DistractionBlocker {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AppBlocker: Native macOS Application Blocking Engine
-// Kills running blocked apps and polls to re-kill them during focus sessions
+// Kills running blocked apps and polls to re-kill them during control sessions
 // ─────────────────────────────────────────────────────────────────────────────
 
 const APP_SEARCH_DIRS = (): string[] => [
@@ -372,7 +389,9 @@ export class AppBlocker {
   private readonly POLL_INTERVAL_MS = 2000;
 
   async startBlocking(appNames: string[]): Promise<{ success: boolean; error?: string }> {
-    if (!appNames || appNames.length === 0) {
+    if (!Array.isArray(appNames)) return { success: false, error: 'Invalid app list.' };
+    appNames = appNames.filter((a) => typeof a === 'string').slice(0, 200);
+    if (appNames.length === 0) {
       this.activeApps = [];
       this.isActive = false;
       this.stopPolling();
@@ -446,7 +465,8 @@ export class AppBlocker {
 
   private async killApp(appName: string): Promise<boolean> {
     const cleanName = appName.replace(/\.app$/i, '').trim();
-    if (!cleanName) return false;
+    if (!cleanName || /[\x00-\x1f]/.test(cleanName) || cleanName.length > 120) return false;
+    if (!/^[A-Za-z0-9 _+.\-]+$/.test(cleanName)) return false;
 
     // Safety check: is the app actually running right now? If not, do NOT touch it!
     const isRunning = await this.isAppRunning(cleanName);
@@ -457,28 +477,50 @@ export class AppBlocker {
       // NEVER use `osascript -e 'quit app ...'` which triggers macOS LaunchServices
       // to resolve unknown/missing apps and open browser tabs.
       // NEVER use broad -fi pattern matching that can match browser tab URLs.
+      const q = shellQuote(cleanName);
       const script =
-        `killall -15 "${cleanName}" >/dev/null 2>&1 || ` +
-        `pkill -15 -x "${cleanName}" >/dev/null 2>&1 || ` +
-        `pkill -15 -f "/${cleanName}\\.app/Contents/MacOS/" >/dev/null 2>&1 || ` +
-        `killall -9 "${cleanName}" >/dev/null 2>&1 || ` +
-        `pkill -9 -x "${cleanName}" >/dev/null 2>&1 || ` +
-        `pkill -9 -f "/${cleanName}\\.app/Contents/MacOS/" >/dev/null 2>&1 || ` +
+        `killall -15 ${q} >/dev/null 2>&1 || ` +
+        `pkill -15 -x ${q} >/dev/null 2>&1 || ` +
+        `pkill -15 -f ${shellQuote(`/${cleanName}.app/Contents/MacOS/`)} >/dev/null 2>&1 || ` +
+        `killall -9 ${q} >/dev/null 2>&1 || ` +
+        `pkill -9 -x ${q} >/dev/null 2>&1 || ` +
+        `pkill -9 -f ${shellQuote(`/${cleanName}.app/Contents/MacOS/`)} >/dev/null 2>&1 || ` +
         `true`;
       await execAsync(script);
+      this.emitKill(cleanName);
       return true;
     } catch {
       return false;
+    }
+  };
+
+  // ── Distraction-autopsy hook ──────────────────────────────────────────
+  // Called once per app actually terminated while blocking is active, so the
+  // main process can log what tried to pull the user away (see rooms/activity
+  // note: site blocks are DNS-level and cannot observe attempts).
+  private killListener: ((appName: string) => void) | null = null;
+
+  /** Register (or clear with null) the kill listener. Rendered harmless when unset. */
+  setKillListener(listener: ((appName: string) => void) | null): void {
+    this.killListener = listener;
+  }
+
+  private emitKill(appName: string): void {
+    if (!this.isActive) return;
+    try {
+      this.killListener?.(appName);
+    } catch {
+      /* listener must never break enforcement */
     }
   }
 
   async isAppRunning(appName: string): Promise<boolean> {
     const cleanName = appName.replace(/\.app$/i, '').trim();
-    if (!cleanName) return false;
+    if (!cleanName || cleanName.length > 120 || !/^[A-Za-z0-9 _+.\-]+$/.test(cleanName)) return false;
 
     try {
       const { stdout } = await execAsync(
-        `pgrep -x "${cleanName}" 2>/dev/null || pgrep -f "/${cleanName}\\.app/Contents/MacOS/" 2>/dev/null || true`
+        `pgrep -x ${shellQuote(cleanName)} 2>/dev/null || pgrep -f ${shellQuote(`/${cleanName}.app/Contents/MacOS/`)} 2>/dev/null || true`
       );
       return stdout.trim().length > 0;
     } catch {
@@ -551,6 +593,7 @@ export class AppBlocker {
   }
 
   async searchInstalledApps(query: string): Promise<InstalledAppInfo[]> {
+    if (typeof query !== 'string') query = '';
     const apps = await this.listInstalledApps();
     const q = query.trim().toLowerCase();
     const results = q ? apps.filter((a) => a.name.toLowerCase().includes(q)).slice(0, 10) : apps.slice(0, 10);

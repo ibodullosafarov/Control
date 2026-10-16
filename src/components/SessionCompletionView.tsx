@@ -1,11 +1,11 @@
 import React, { useEffect } from 'react';
 import confetti from 'canvas-confetti';
 import { CheckCircle2, ArrowRight, BarChart3, ListTodo, Sparkles } from 'lucide-react';
-import { FocusSession, ThemeId } from '../types';
+import { ControlSession, ThemeId } from '../types';
 import { THEMES } from '../styles/themes';
 
 interface SessionCompletionViewProps {
-  session: FocusSession;
+  session: ControlSession;
   onReturnToLauncher: () => void;
   onViewHistory: () => void;
   onViewTasks: () => void;
@@ -83,12 +83,12 @@ export const SessionCompletionView: React.FC<SessionCompletionViewProps> = ({
         className="text-xs font-mono mb-8 uppercase tracking-widest"
         style={{ color: currentTheme.textSecondary }}
       >
-        {session.modeName} Focus Session
+        {session.modeName} Control Session
       </p>
 
       {/* Clean Liquid Glass Stat Card */}
       <div className="w-full max-w-md liquid-glass-elevated border rounded-3xl p-6 space-y-4 mb-8 text-left shadow-2xl">
-        {/* Minutes Focused */}
+        {/* Minutes Controlled */}
         <div 
           className="flex items-center justify-between border-b pb-3"
           style={{ borderColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)' }}
@@ -97,10 +97,10 @@ export const SessionCompletionView: React.FC<SessionCompletionViewProps> = ({
             className="text-xs uppercase font-mono"
             style={{ color: currentTheme.textSecondary }}
           >
-            Focus Time
+            Control Time
           </span>
           <span className="text-lg font-bold text-sky-500">
-            {session.actualWorkMinutes} MINUTES FOCUSED
+            {session.actualWorkMinutes} MINUTES CONTROLLED
           </span>
         </div>
 

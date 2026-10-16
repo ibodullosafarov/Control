@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, Tray, Menu, Notification, nativeImage } fr
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
+import { autoUpdater } from 'electron-updater';
 import { localStore } from './store';
 import { blocker, appBlocker } from './blocker';
 import { calendarManager } from './calendar';
@@ -9,7 +10,17 @@ import { obsidianManager } from './obsidian';
 import { plannerMarkdown } from './plannerMarkdown';
 import { GoogleSyncService } from './google/service';
 import { AutoExecService } from './autoexec';
-import { FocusAppData, ScheduleBlock, GoogleCalendarConfig, BlockingStrategy, PurposeSessionRequest, TaskItem, StudyMode, ObsidianConfig } from '../src/types';
+import { activityTracker } from './activity';
+import { RoomsCoordinator } from './rooms/index';
+import type { RoomTimerState } from './rooms/net';
+import {
+  openQuickNote,
+  registerQuickNoteIpc,
+  registerQuickNoteShortcut,
+  unregisterQuickNoteShortcut,
+} from './quicknote';
+import type { CaptureTarget } from './quicknote';
+import { ControlAppData, ScheduleBlock, GoogleCalendarConfig, BlockingStrategy, PurposeSessionRequest, TaskItem, StudyMode, ObsidianConfig, Note, NoteFolder } from '../src/types';
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -33,7 +44,54 @@ const autoExec = new AutoExecService({
 });
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
-const PURPOSE_REQUEST_FILE = path.join(os.homedir(), '.focus-app', 'purpose-session-request.json');
+const PURPOSE_REQUEST_FILE = path.join(os.homedir(), '.control-app', 'purpose-session-request.json');
+
+function sendToRenderer(channel: string, payload?: unknown): void {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(channel, payload);
+    }
+  } catch {
+    // Window gone; event is dropped.
+  }
+}
+
+// LAN control rooms (feature: accountability without accounts or cloud).
+const rooms = new RoomsCoordinator((event) => sendToRenderer('control:roomsEvent', event));
+
+// Quick-note capture target (popup window). Resolved once the app is ready.
+let captureTarget: CaptureTarget | null = null;
+
+function resolveCaptureTarget(): CaptureTarget {
+  const appPath = app.getAppPath();
+  const preloadCandidates = [
+    path.join(appPath, 'dist-electron/electron/preload.js'),
+    path.join(__dirname, 'preload.js'),
+    path.join(__dirname, '../preload.js'),
+  ];
+  const preloadPath = preloadCandidates.find((p) => fs.existsSync(p)) || preloadCandidates[0];
+  if (isDev && process.env.VITE_DEV_SERVER_URL) {
+    return { preloadPath, devUrl: process.env.VITE_DEV_SERVER_URL };
+  }
+  const indexCandidates = [
+    path.join(appPath, 'dist/index.html'),
+    path.join(__dirname, '../../dist/index.html'),
+    path.join(__dirname, '../dist/index.html'),
+  ];
+  const filePath = indexCandidates.find((p) => fs.existsSync(p)) || indexCandidates[0];
+  return { preloadPath, filePath };
+}
+
+function openCapture(): void {
+  if (!captureTarget) return;
+  let theme: string | undefined;
+  try {
+    theme = localStore.get().settings.theme;
+  } catch {
+    theme = undefined;
+  }
+  openQuickNote(captureTarget, theme);
+}
 
 function getPurposeSessionRequest(): PurposeSessionRequest | null {
   try {
@@ -72,7 +130,7 @@ function notifyPurposeSessionIfPresent() {
       mainWindow.show();
     }
     mainWindow.focus();
-    mainWindow.webContents.send('focus:purposeSessionRequested');
+    mainWindow.webContents.send('control:purposeSessionRequested');
   }
 }
 
@@ -152,11 +210,11 @@ function createMainWindow() {
   });
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
-    console.error('Focus renderer failed to load:', errorCode, errorDescription, validatedURL);
+    console.error('Control renderer failed to load:', errorCode, errorDescription, validatedURL);
   });
 
   mainWindow.webContents.on('did-finish-load', () => {
-    console.log('Focus renderer loaded successfully.');
+    console.log('Control renderer loaded successfully.');
     notifyPurposeSessionIfPresent();
   });
 
@@ -183,12 +241,12 @@ function createMainWindow() {
 
     const isActive = currentTrayInfo && currentTrayInfo.isActive;
     if (isActive) {
-      // If a focus session is actively running, show the confirmation modal without time restriction
+      // If a control session is actively running, show the confirmation modal without time restriction
       e.preventDefault();
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.show();
         mainWindow.focus();
-        mainWindow.webContents.send('focus:triggerLeaveModal');
+        mainWindow.webContents.send('control:triggerLeaveModal');
       }
     } else {
       // No active session: gracefully hide window to macOS tray if tray is active, or allow close
@@ -278,22 +336,28 @@ function updateTrayMenu(info?: TraySessionInfo | null) {
         {
           label: currentTrayInfo.isPaused ? 'Resume Session' : 'Pause Session',
           click: () => {
-            mainWindow?.webContents.send('focus:trayAction', 'togglePause');
+            mainWindow?.webContents.send('control:trayAction', 'togglePause');
           },
         },
         {
           label: 'Next Task',
           click: () => {
-            mainWindow?.webContents.send('focus:trayAction', 'nextTask');
+            mainWindow?.webContents.send('control:trayAction', 'nextTask');
           },
         },
         {
           label: 'End Session',
           click: () => {
-            mainWindow?.webContents.send('focus:trayAction', 'endSession');
+            mainWindow?.webContents.send('control:trayAction', 'endSession');
           },
         },
         { type: 'separator' },
+        {
+          label: 'Quick Note…',
+          click: () => {
+            openCapture();
+          },
+        },
         {
           label: 'Open Control',
           click: () => {
@@ -351,6 +415,12 @@ function updateTrayMenu(info?: TraySessionInfo | null) {
           enabled: false,
         },
         { type: 'separator' },
+        {
+          label: 'Quick Note…',
+          click: () => {
+            openCapture();
+          },
+        },
         {
           label: 'Open Control',
           click: () => {
@@ -446,20 +516,20 @@ function setupLaunchAtLogin(enabled: boolean) {
     });
 
     const launchAgentsDir = path.join(os.homedir(), 'Library', 'LaunchAgents');
-    const plistPath = path.join(launchAgentsDir, 'com.focus.studyapp.plist');
+    const plistPath = path.join(launchAgentsDir, 'com.control.studyapp.plist');
 
     if (enabled) {
       if (!fs.existsSync(launchAgentsDir)) {
         fs.mkdirSync(launchAgentsDir, { recursive: true });
       }
 
-      const execPath = process.execPath;
+      const execPath = process.execPath.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const plistContent = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.focus.studyapp</string>
+    <string>com.control.studyapp</string>
     <key>ProgramArguments</key>
     <array>
         <string>${execPath}</string>
@@ -492,7 +562,7 @@ function setupIpc() {
     if (config?.enabled && config.vaultPath && config.vaultPath.trim()) {
       obsidianManager.ensureWatching(config, () => {
         if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('focus:tasksFileChanged');
+          mainWindow.webContents.send('control:tasksFileChanged');
         }
       });
     } else {
@@ -500,18 +570,21 @@ function setupIpc() {
     }
   };
 
-  ipcMain.handle('focus:getData', async () => {
+  ipcMain.handle('control:getData', async () => {
     return localStore.get();
   });
 
-  ipcMain.handle('focus:saveData', async (_, data: FocusAppData) => {
+  ipcMain.handle('control:saveData', async (_, data: ControlAppData) => {
+    if (!data || typeof data !== 'object' || !Array.isArray((data as ControlAppData).modes)) {
+      return false;
+    }
     // Follow vault path changes so Markdown two-way sync stays attached
     ensureTasksWatch(data?.settings?.obsidian);
     const vaultPath = data?.settings?.obsidian?.vaultPath;
     if (vaultPath) {
       plannerMarkdown.ensureWatching(vaultPath, (payload) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('focus:plannerFileChanged', payload);
+          mainWindow.webContents.send('control:plannerFileChanged', payload);
         }
       });
     } else {
@@ -523,39 +596,41 @@ function setupIpc() {
     return saved;
   });
 
-  ipcMain.handle('focus:startBlocking', async (_, domains: string[], strategy: BlockingStrategy) => {
+  ipcMain.handle('control:startBlocking', async (_, domains: string[], strategy: BlockingStrategy) => {
+    if (!Array.isArray(domains)) return { success: false, error: 'Invalid blocklist.' };
     return await blocker.startBlocking(domains, strategy);
   });
 
-  ipcMain.handle('focus:stopBlocking', async () => {
+  ipcMain.handle('control:stopBlocking', async () => {
     return await blocker.stopBlocking();
   });
 
-  ipcMain.handle('focus:getBlockerStatus', async () => {
+  ipcMain.handle('control:getBlockerStatus', async () => {
     return blocker.getStatus();
   });
 
-  ipcMain.handle('focus:startAppBlocking', async (_, apps: string[]) => {
+  ipcMain.handle('control:startAppBlocking', async (_, apps: string[]) => {
+    if (!Array.isArray(apps)) return { success: false, error: 'Invalid app list.' };
     return await appBlocker.startBlocking(apps);
   });
 
-  ipcMain.handle('focus:stopAppBlocking', async () => {
+  ipcMain.handle('control:stopAppBlocking', async () => {
     return await appBlocker.stopBlocking();
   });
 
-  ipcMain.handle('focus:getAppBlockerStatus', async () => {
+  ipcMain.handle('control:getAppBlockerStatus', async () => {
     return appBlocker.getStatus();
   });
 
-  ipcMain.handle('focus:searchInstalledApps', async (_, query: string) => {
-    return await appBlocker.searchInstalledApps(query || '');
+  ipcMain.handle('control:searchInstalledApps', async (_, query: string) => {
+    return await appBlocker.searchInstalledApps(typeof query === 'string' ? query : '');
   });
 
-  ipcMain.handle('focus:updateTraySession', async (_, info: TraySessionInfo) => {
+  ipcMain.handle('control:updateTraySession', async (_, info: TraySessionInfo) => {
     updateTrayMenu(info);
   });
 
-  ipcMain.handle('focus:updateTray', async (_, text: string, title?: string, tooltip?: string) => {
+  ipcMain.handle('control:updateTray', async (_, text: string, title?: string, tooltip?: string) => {
     if (tray) {
       try {
         const titleToSet = text ? (text.startsWith(' ') ? text : ` ${text}`) : '';
@@ -575,13 +650,16 @@ function setupIpc() {
     }
   });
 
-  ipcMain.handle('focus:sendNotification', async (_, title: string, body: string) => {
+  ipcMain.handle('control:sendNotification', async (_, title: string, body: string) => {
     if (Notification.isSupported()) {
-      new Notification({ title, body }).show();
+      new Notification({
+        title: typeof title === 'string' ? title.slice(0, 120) || 'Control' : 'Control',
+        body: typeof body === 'string' ? body.slice(0, 500) : '',
+      }).show();
     }
   });
 
-  ipcMain.handle('focus:setMinimalWindow', async (_, isMinimal: boolean) => {
+  ipcMain.handle('control:setMinimalWindow', async (_, isMinimal: boolean) => {
     if (mainWindow) {
       if (isMinimal) {
         mainWindow.setSize(540, 480, true);
@@ -591,20 +669,20 @@ function setupIpc() {
     }
   });
 
-  ipcMain.handle('focus:syncToGoogleCalendar', async (_, blocks: ScheduleBlock[], config: GoogleCalendarConfig) => {
+  ipcMain.handle('control:syncToGoogleCalendar', async (_, blocks: ScheduleBlock[], config: GoogleCalendarConfig) => {
     return await calendarManager.syncToGoogleCalendar(blocks, config);
   });
 
-  ipcMain.handle('focus:exportToIcs', async (_, blocks: ScheduleBlock[]) => {
+  ipcMain.handle('control:exportToIcs', async (_, blocks: ScheduleBlock[]) => {
     return await calendarManager.exportToIcs(blocks);
   });
 
-  ipcMain.handle('focus:selectDirectory', async () => {
+  ipcMain.handle('control:selectDirectory', async () => {
     return await obsidianManager.selectDirectory(mainWindow);
   });
 
   ipcMain.handle(
-    'focus:syncToObsidian',
+    'control:syncToObsidian',
     async (_, tasks: TaskItem[], modes: StudyMode[], config: ObsidianConfig) => {
       const result = await obsidianManager.syncTasks(tasks, modes, config);
       ensureTasksWatch(config);
@@ -612,21 +690,34 @@ function setupIpc() {
     }
   );
 
-  ipcMain.handle('focus:tasksMdRead', async (_, config: ObsidianConfig) => {
+  ipcMain.handle('control:tasksMdRead', async (_, config: ObsidianConfig) => {
     ensureTasksWatch(config);
     return await obsidianManager.readTasks(config);
   });
 
-  ipcMain.handle('focus:openPath', async (_, targetPath: string) => {
+  ipcMain.handle(
+    'control:syncNotesToObsidian',
+    async (_, notes: Note[], folders: NoteFolder[], config: ObsidianConfig) => {
+      return await obsidianManager.syncNotes(
+        Array.isArray(notes) ? notes : [],
+        Array.isArray(folders) ? folders : [],
+        config
+      );
+    }
+  );
+
+  ipcMain.handle('control:openPath', async (_, targetPath: string) => {
     return await obsidianManager.openPath(targetPath);
   });
 
-  ipcMain.handle('focus:setLaunchAtLogin', async (_, enabled: boolean) => {
+  ipcMain.handle('control:setLaunchAtLogin', async (_, enabled: boolean) => {
     setupLaunchAtLogin(enabled);
     return true;
   });
 
-  ipcMain.handle('focus:openSelfControl', async (_, blocklist: string[], minutes: number) => {
+  ipcMain.handle('control:openSelfControl', async (_, blocklist: string[], minutes: number) => {
+    if (!Array.isArray(blocklist)) return { success: false, error: 'Invalid blocklist.' };
+    if (!Number.isFinite(minutes)) return { success: false, error: 'Invalid duration.' };
     return await blocker.startSelfControl(blocklist, minutes);
   });
 
@@ -634,30 +725,30 @@ function setupIpc() {
   const ensurePlannerWatch = (vaultPath: string) => {
     plannerMarkdown.ensureWatching(vaultPath, (payload) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('focus:plannerFileChanged', payload);
+        mainWindow.webContents.send('control:plannerFileChanged', payload);
       }
     });
   };
 
-  ipcMain.handle('focus:plannerMdStatus', async (_, vaultPath: string) => {
+  ipcMain.handle('control:plannerMdStatus', async (_, vaultPath: string) => {
     if (vaultPath) ensurePlannerWatch(vaultPath);
     return plannerMarkdown.getStatus(vaultPath);
   });
 
-  ipcMain.handle('focus:plannerMdListTemplates', async (_, vaultPath: string) => {
+  ipcMain.handle('control:plannerMdListTemplates', async (_, vaultPath: string) => {
     if (!vaultPath) return [];
     ensurePlannerWatch(vaultPath);
     return plannerMarkdown.listTemplates(vaultPath);
   });
 
-  ipcMain.handle('focus:plannerMdReadDay', async (_, vaultPath: string, date: string) => {
+  ipcMain.handle('control:plannerMdReadDay', async (_, vaultPath: string, date: string) => {
     if (!vaultPath) return null;
     ensurePlannerWatch(vaultPath);
     return plannerMarkdown.readDay(vaultPath, date);
   });
 
   ipcMain.handle(
-    'focus:plannerMdApplyTemplate',
+    'control:plannerMdApplyTemplate',
     async (_, vaultPath: string, templateName: string, date: string, variables: Record<string, string>) => {
       if (!vaultPath) return { success: false, error: 'No Obsidian vault selected.' };
       ensurePlannerWatch(vaultPath);
@@ -666,7 +757,7 @@ function setupIpc() {
   );
 
   ipcMain.handle(
-    'focus:plannerMdCreateTemplate',
+    'control:plannerMdCreateTemplate',
     async (_, vaultPath: string, name: string, content: string) => {
       if (!vaultPath) return { success: false, error: 'No Obsidian vault selected.' };
       ensurePlannerWatch(vaultPath);
@@ -675,7 +766,7 @@ function setupIpc() {
   );
 
   ipcMain.handle(
-    'focus:plannerMdSaveDayAsTemplate',
+    'control:plannerMdSaveDayAsTemplate',
     async (_, vaultPath: string, date: string, name: string) => {
       if (!vaultPath) return { success: false, error: 'No Obsidian vault selected.' };
       ensurePlannerWatch(vaultPath);
@@ -684,7 +775,7 @@ function setupIpc() {
   );
 
   ipcMain.handle(
-    'focus:plannerMdDuplicateTemplate',
+    'control:plannerMdDuplicateTemplate',
     async (_, vaultPath: string, name: string, newName: string) => {
       if (!vaultPath) return { success: false, error: 'No Obsidian vault selected.' };
       ensurePlannerWatch(vaultPath);
@@ -692,14 +783,14 @@ function setupIpc() {
     }
   );
 
-  ipcMain.handle('focus:plannerMdDeleteTemplate', async (_, vaultPath: string, name: string) => {
+  ipcMain.handle('control:plannerMdDeleteTemplate', async (_, vaultPath: string, name: string) => {
     if (!vaultPath) return { success: false, error: 'No Obsidian vault selected.' };
     ensurePlannerWatch(vaultPath);
     return plannerMarkdown.deleteTemplate(vaultPath, name);
   });
 
   ipcMain.handle(
-    'focus:plannerMdWriteTemplate',
+    'control:plannerMdWriteTemplate',
     async (_, vaultPath: string, name: string, content: string) => {
       if (!vaultPath) return { success: false, error: 'No Obsidian vault selected.' };
       ensurePlannerWatch(vaultPath);
@@ -708,7 +799,7 @@ function setupIpc() {
   );
 
   ipcMain.handle(
-    'focus:plannerMdToggleTask',
+    'control:plannerMdToggleTask',
     async (_, vaultPath: string, date: string, taskIndex: number, completed: boolean) => {
       if (!vaultPath) return { success: false, error: 'No Obsidian vault selected.' };
       return plannerMarkdown.toggleTask(vaultPath, date, taskIndex, completed);
@@ -716,25 +807,25 @@ function setupIpc() {
   );
 
   ipcMain.handle(
-    'focus:plannerMdUpdateTaskTitle',
+    'control:plannerMdUpdateTaskTitle',
     async (_, vaultPath: string, date: string, taskIndex: number, title: string) => {
       if (!vaultPath) return { success: false, error: 'No Obsidian vault selected.' };
       return plannerMarkdown.updateTaskTitle(vaultPath, date, taskIndex, title);
     }
   );
 
-  ipcMain.handle('focus:plannerMdOpenFile', async (_, filePath: string) => {
+  ipcMain.handle('control:plannerMdOpenFile', async (_, filePath: string) => {
     return await obsidianManager.openPath(filePath);
   });
 
-  ipcMain.handle('focus:plannerMdReadTemplate', async (_, vaultPath: string, templateName: string) => {
+  ipcMain.handle('control:plannerMdReadTemplate', async (_, vaultPath: string, templateName: string) => {
     if (!vaultPath) return { success: false, error: 'No Obsidian vault selected.' };
     ensurePlannerWatch(vaultPath);
     return plannerMarkdown.readTemplate(vaultPath, templateName);
   });
 
   ipcMain.handle(
-    'focus:plannerMdUpdateDaySchedule',
+    'control:plannerMdUpdateDaySchedule',
     async (_, vaultPath: string, date: string, sectionBody: string) => {
       if (!vaultPath) return { success: false, error: 'No Obsidian vault selected.' };
       ensurePlannerWatch(vaultPath);
@@ -742,26 +833,84 @@ function setupIpc() {
     }
   );
 
-  ipcMain.handle('focus:minimizeToTray', async () => {
+  ipcMain.handle('control:minimizeToTray', async () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.hide();
     }
   });
 
-  ipcMain.handle('focus:getPurposeSessionRequest', async () => {
+  ipcMain.handle('control:activitySetEnabled', async (_, enabled: boolean) => {
+    try {
+      if (enabled) activityTracker.start();
+      else activityTracker.stop();
+      return { success: true, running: activityTracker.running };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('control:roomsGetStatus', async () => rooms.status());
+
+  ipcMain.handle('control:roomsHostStart', async (_, room: string, name: string) => {
+    try {
+      const { port } = await rooms.startHosting(room, name);
+      return { success: true, port };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('control:roomsHostStop', async () => {
+    await rooms.stopHosting();
+    return { success: true };
+  });
+
+  ipcMain.handle('control:roomsPublish', async (_, state: RoomTimerState | null) => {
+    try {
+      rooms.publish(state);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('control:roomsJoin', async (_, host: string, port: number, name: string) => {
+    try {
+      if (typeof host !== 'string' || !Number.isFinite(port) || port <= 0 || port > 65535) {
+        return { success: false, error: 'Invalid host or port.' };
+      }
+      await rooms.join(host, port, typeof name === 'string' ? name : 'Guest');
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('control:roomsLeave', async () => {
+    await rooms.leave();
+    return { success: true };
+  });
+
+  registerQuickNoteIpc({
+    store: localStore,
+    target: () => captureTarget || resolveCaptureTarget(),
+    notifyNotesChanged: (notes: Note[]) => sendToRenderer('control:notesChanged', notes),
+  });
+
+  ipcMain.handle('control:getPurposeSessionRequest', async () => {
     return getPurposeSessionRequest();
   });
 
-  ipcMain.handle('focus:acknowledgePurposeSessionRequest', async (_, id: string) => {
+  ipcMain.handle('control:acknowledgePurposeSessionRequest', async (_, id: string) => {
     return acknowledgePurposeSessionRequest(id);
   });
 
-  ipcMain.handle('focus:requestQuit', async () => {
+  ipcMain.handle('control:requestQuit', async () => {
     const isActive = currentTrayInfo && currentTrayInfo.isActive;
     if (isActive && mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.show();
       mainWindow.focus();
-      mainWindow.webContents.send('focus:triggerLeaveModal');
+      mainWindow.webContents.send('control:triggerLeaveModal');
     } else {
       isQuitting = true;
       await appBlocker.stopBlocking();
@@ -770,7 +919,7 @@ function setupIpc() {
     }
   });
 
-  ipcMain.handle('focus:confirmQuit', async () => {
+  ipcMain.handle('control:confirmQuit', async () => {
     isQuitting = true;
     await appBlocker.stopBlocking();
     await blocker.stopBlocking();
@@ -778,16 +927,113 @@ function setupIpc() {
   });
 }
 
-// Allow audio cues, alarms and ambient soundscapes to play without strict Chromium autoplay restrictions
+// Allow audio cues and alarms to play without strict Chromium autoplay restrictions
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+
+// Auto-updates: the packaged app checks the GitHub Releases feed for a newer
+// build. Runs only in the packaged app (dev builds should never self-update).
+function setupAutoUpdater() {
+  if (!app.isPackaged) return;
+  try {
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.on('update-downloaded', () => {
+      if (Notification.isSupported()) {
+        new Notification({
+          title: 'Control update ready',
+          body: 'A new version is installed and will apply when you quit Control.',
+        }).show();
+      }
+    });
+    autoUpdater.checkForUpdatesAndNotify().catch((err: unknown) => {
+      console.warn('Auto-update check failed:', err);
+    });
+  } catch (err) {
+    console.warn('Auto-updater setup failed:', err);
+  }
+}
+
+// System-wide control API: control://control?mode=<mode id or name>&task=<text>
+// (pre-rename control://focus?… links are still accepted).
+// Shortcuts.app can open URLs, so personal automations come free.
+// Registration + single-instance lock only apply to packaged builds so that
+// parallel dev instances keep working.
+const singleInstanceOk = !app.isPackaged || app.requestSingleInstanceLock();
+if (!singleInstanceOk) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (!mainWindow.isVisible()) mainWindow.show();
+      mainWindow.focus();
+    }
+    notifyPurposeSessionIfPresent();
+  });
+}
+
+function handleControlUrl(url: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return;
+  }
+  if (parsed.protocol !== 'control:') return;
+  const action = parsed.hostname || parsed.pathname.replace(/^\/+/, '');
+  if (action !== 'control' && action !== 'focus') return;
+  const mode = (parsed.searchParams.get('mode') || '').trim();
+  const task = (parsed.searchParams.get('task') || '').trim();
+  if (!mode && !task) return;
+  const request: PurposeSessionRequest = {
+    version: 2,
+    id: `url-${Date.now()}`,
+    createdAt: new Date().toISOString(),
+    modeId: mode,
+    purpose: task,
+  };
+  try {
+    fs.mkdirSync(path.dirname(PURPOSE_REQUEST_FILE), { recursive: true });
+    fs.writeFileSync(PURPOSE_REQUEST_FILE, JSON.stringify(request));
+  } catch (err) {
+    console.warn('Unable to write URL session request:', err);
+    return;
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (!mainWindow.isVisible()) mainWindow.show();
+    mainWindow.focus();
+  }
+  notifyPurposeSessionIfPresent();
+}
+
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  handleControlUrl(url);
+});
 
 // App lifecycle
 app.whenReady().then(() => {
   applyAppDockIcon();
+  captureTarget = resolveCaptureTarget();
+  const quickNoteAccelerator = registerQuickNoteShortcut(openCapture);
+  if (quickNoteAccelerator) {
+    console.log(`Quick-note shortcut registered: ${quickNoteAccelerator}`);
+  } else {
+    console.warn('Quick-note global shortcut unavailable (already taken). Tray item still works.');
+  }
+  if (app.isPackaged) {
+    try {
+      if (!app.isDefaultProtocolClient('control')) {
+        app.setAsDefaultProtocolClient('control');
+      }
+    } catch (err) {
+      console.warn('Unable to register control:// protocol:', err);
+    }
+  }
   setupIpc();
   createMainWindow();
   createTray();
   startPurposeRequestWatcher();
+  setupAutoUpdater();
   googleSync.start();
   autoExec.start();
 
@@ -802,17 +1048,26 @@ app.whenReady().then(() => {
   if (vaultPath) {
     plannerMarkdown.ensureWatching(vaultPath, (payload) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('focus:plannerFileChanged', payload);
+        mainWindow.webContents.send('control:plannerFileChanged', payload);
       }
     });
   }
   if (settings.obsidian?.enabled && vaultPath) {
     obsidianManager.ensureWatching(settings.obsidian, () => {
       if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('focus:tasksFileChanged');
+        mainWindow.webContents.send('control:tasksFileChanged');
       }
     });
   }
+
+  // Distraction autopsy: log apps terminated while blocking is active.
+  appBlocker.setKillListener((appName) => {
+    sendToRenderer('control:distractionBlocked', { t: Date.now(), kind: 'app', name: appName });
+  });
+  // Automatic time tracking stays off unless the renderer enables it.
+  activityTracker.setListener((point) => {
+    sendToRenderer('control:activitySample', point);
+  });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -823,14 +1078,23 @@ app.whenReady().then(() => {
   });
 });
 
-app.on('before-quit', async () => {
+app.on('before-quit', () => {
   isQuitting = true;
-  googleSync.stop();
-  autoExec.stop();
-  plannerMarkdown.stopWatching();
-  obsidianManager.stopWatching();
-  await appBlocker.stopBlocking();
-  await blocker.stopBlocking();
+  try { googleSync.stop(); } catch { /* ignore */ }
+  try { autoExec.stop(); } catch { /* ignore */ }
+  try { activityTracker.stop(); } catch { /* ignore */ }
+  try { unregisterQuickNoteShortcut(); } catch { /* ignore */ }
+  try { plannerMarkdown.stopWatching(); } catch { /* ignore */ }
+  try { obsidianManager.stopWatching(); } catch { /* ignore */ }
+  // Electron does not await async before-quit: best-effort synchronous cleanup.
+  // Full privileged unblock also runs on explicit Quit handlers which do await.
+  void rooms.shutdown().catch(() => undefined);
+  void (async () => {
+    try { await appBlocker.stopBlocking(); } catch { /* ignore */ }
+    try { await blocker.stopBlocking(); } catch { /* ignore */ }
+  })();
+  try { clearInterval(purposeRequestPoller as unknown as NodeJS.Timeout); } catch { /* ignore */ }
+  purposeRequestPoller = null;
 });
 
 app.on('window-all-closed', () => {

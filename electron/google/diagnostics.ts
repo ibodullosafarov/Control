@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 /**
- * Sanitized diagnostics log (~/.focus-app/google-sync/diagnostics.log).
+ * Sanitized diagnostics log (~/.control-app/google-sync/diagnostics.log).
  *
  * Records sync/connect events with error codes and messages so a failing
  * setup can be diagnosed from the log alone. NEVER writes tokens, secrets,

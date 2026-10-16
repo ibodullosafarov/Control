@@ -1,31 +1,30 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { 
   Play, Pause, SkipForward, CheckCircle2, Volume2, VolumeX, Shield, ShieldOff, 
-  Coffee, ArrowLeft, Maximize2, Minimize2, Check, Sparkles, ChevronDown, ChevronUp, Music, AppWindow
+  Coffee, ArrowLeft, Maximize2, Minimize2, Check, Sparkles, ChevronDown, ChevronUp, AppWindow
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
-import { SessionPhase, ThemeId, FocusSession, UserSettings, TaskItem, ActiveSessionState } from '../types';
+import { SessionPhase, ThemeId, ControlSession, UserSettings, TaskItem, ActiveSessionState } from '../types';
 import { THEMES } from '../styles/themes';
 import { sound } from '../services/sound';
 import { blockerClient } from '../services/blockerClient';
-import { resolveWorkCompletion } from '../services/sessionFlow';
-import { AmbientSoundType } from '../services/ambientAudio';
+import { resolveWorkCompletion, isLongBreakCycle } from '../services/sessionFlow';
 
 interface ActiveSessionViewProps {
   sessionState: ActiveSessionState;
   allTasks: TaskItem[];
+  modes?: Array<{ id: string; name: string; workDuration: number; breakDuration: number; longBreakDuration: number; longBreakInterval: number; blocklist: string[]; blockedApps: string[]; blockingStrategy: ActiveSessionState['blockingStrategy'] }>;
+  onSwitchModeForRemaining?: (modeId: string) => void;
   onUpdateSessionState: (updated: ActiveSessionState) => void;
   onUpdateTask: (task: TaskItem) => void;
   onAddTask: (title: string, modeId?: string) => TaskItem;
   onAddQueueTask?: (title: string) => TaskItem;
   onAddExistingTaskToQueue?: (taskId: string) => void;
-  onFinishSession: (sessionSummary: FocusSession) => void;
+  onFinishSession: (sessionSummary: ControlSession) => void;
   onCancelSession: () => void;
   onRequestLeave: () => void;
   theme: ThemeId;
   settings: UserSettings;
-  currentSound?: AmbientSoundType | null;
-  onOpenSoundControl?: () => void;
   /**
    * Incremented by the app when the auto-execution scheduler asks this exact
    * session to end (scheduled end time). Triggers the normal completion path.
@@ -36,6 +35,8 @@ interface ActiveSessionViewProps {
 export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
   sessionState,
   allTasks,
+  modes,
+  onSwitchModeForRemaining,
   onUpdateSessionState,
   onUpdateTask,
   onAddTask,
@@ -46,8 +47,6 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
   onRequestLeave,
   theme,
   settings,
-  currentSound,
-  onOpenSoundControl,
   externalFinishSignal,
 }) => {
   const currentTheme = THEMES[theme] || THEMES.serika;
@@ -76,6 +75,12 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
   }, [sessionState]);
 
   const [secondsLeft, setSecondsLeft] = useState<number>(calculateSecondsLeft());
+
+  // Re-sync displayed countdown immediately on phase/pause changes
+  // (otherwise it shows the old phase's 00:00 until the next 1s tick).
+  useEffect(() => {
+    setSecondsLeft(calculateSecondsLeft());
+  }, [calculateSecondsLeft, sessionState.phase, sessionState.phaseStartTime, sessionState.phaseDurationSeconds, sessionState.isPaused]);
 
   // Audio helper
   const playSound = useCallback((type: 'work' | 'break' | 'complete' | 'tick') => {
@@ -106,8 +111,10 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
     (t) => !t.completed && !sessionState.taskIds.includes(t.id) && !sessionState.completedTaskIds.includes(t.id)
   );
 
-  // Blocker synchronization
+  // Blocker synchronization (generation-guarded: stale stop/start pairs are dropped)
+  const blockerGenRef = React.useRef(0);
   useEffect(() => {
+    const gen = ++blockerGenRef.current;
     const handleBlocker = async () => {
       // Per-session override (schedule templates) wins over mode rules.
       // `false` suppresses enforcement for the whole session; `true` enforces
@@ -134,12 +141,17 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
 
       if (sessionState.phase === 'work') {
         const res = await blockerClient.startBlocking(sessionState.blocklist, sessionState.blockingStrategy);
+        if (gen !== blockerGenRef.current) return;
         if (hasAppBlocks) {
           await blockerClient.startAppBlocking(sessionState.blockedApps || []);
         } else {
           await blockerClient.stopAppBlocking();
         }
+        if (gen !== blockerGenRef.current) return;
         setBlockerActive(res.success);
+      } else if (sessionState.allowBreakWebsites === false && shouldEnforce && (hasWebBlocks || hasAppBlocks)) {
+        // B-08: modes that lock breaks keep Shield armed through rest.
+        setBlockerActive(true);
       } else {
         await blockerClient.stopBlocking();
         await blockerClient.stopAppBlocking();
@@ -147,11 +159,12 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
       }
     };
 
-    handleBlocker();
+    void handleBlocker().catch(() => undefined);
 
     return () => {
-      blockerClient.stopBlocking();
-      blockerClient.stopAppBlocking();
+      blockerGenRef.current++;
+      void blockerClient.stopBlocking().catch(() => undefined);
+      void blockerClient.stopAppBlocking().catch(() => undefined);
     };
   }, [sessionState.phase, sessionState.blocklist, sessionState.blockingStrategy, sessionState.isChillMode, sessionState.blockedApps, sessionState.blockingOverride]);
 
@@ -166,8 +179,8 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
   // Cleanup tray & title only when active session completely unmounts
   useEffect(() => {
     return () => {
-      if (window.focusAPI?.updateTraySession) {
-        window.focusAPI.updateTraySession({
+      if (window.controlAPI?.updateTraySession) {
+        window.controlAPI.updateTraySession({
           isActive: false,
           timeRemainingStr: '',
           isPaused: false,
@@ -183,8 +196,8 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
     const s = secondsLeft % 60;
     const timeStr = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 
-    if (window.focusAPI?.updateTraySession) {
-      window.focusAPI.updateTraySession({
+    if (window.controlAPI?.updateTraySession) {
+      window.controlAPI.updateTraySession({
         isActive: true,
         timeRemainingStr: timeStr,
         currentTaskTitle: currentTask?.title,
@@ -194,21 +207,30 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
       });
     }
 
-    document.title = `${timeStr} — ${currentTask ? currentTask.title : sessionState.modeName}`;
+    document.title = `${sessionState.isPaused ? '⏸ ' : ''}${timeStr} — ${currentTask ? currentTask.title : sessionState.modeName}`;
   }, [secondsLeft, currentTask?.title, remainingSessionTasks.length, sessionState.isPaused, sessionState.modeName]);
 
   // Complete session summary
+  // D1 fix: caller passes the final completed-cycle count so a full run
+  // records totalCycles (not totalCycles-1) and finishedEarly=false.
   const completeSession = useCallback(
-    (status: 'completed' | 'cancelled') => {
+    (status: 'completed' | 'cancelled', completedCyclesOverride?: number) => {
       blockerClient.stopBlocking();
       blockerClient.stopAppBlocking();
 
-      const actualMins = Math.max(1, Math.round(accumulatedWorkSecondsRef.current / 60));
+      // B-05: honest yearbook — sub-minute work records 0, never a free minute.
+      const rawMins = Math.round(accumulatedWorkSecondsRef.current / 60);
+      const actualMins = accumulatedWorkSecondsRef.current < 30 ? 0 : Math.max(1, rawMins);
       const plannedMins = sessionState.isChillMode
         ? sessionState.workDurationMins
         : sessionState.totalCycles * sessionState.workDurationMins;
+      const wallSecs = sessionState.startedAt ? Math.max(0, Math.floor((Date.now() - Date.parse(sessionState.startedAt)) / 1000)) : accumulatedWorkSecondsRef.current;
+      const skipped = (sessionState as unknown as { skippedPhases?: number }).skippedPhases || 0;
+      // D1: use override when completing the final work phase; D3: cumulative pause.
+      const finalCompletedCycles = completedCyclesOverride ?? sessionState.completedCyclesCount;
+      const totalPauseAll = (sessionState.totalPauseSecondsAllPhases ?? 0) + sessionState.totalPauseSecondsThisPhase;
 
-      const summary: FocusSession = {
+      const summary: ControlSession = {
         id: sessionState.id,
         modeId: sessionState.modeId,
         modeName: sessionState.modeName,
@@ -219,13 +241,20 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
         plannedWorkMinutes: plannedMins,
         actualWorkMinutes: actualMins,
         plannedCycles: sessionState.totalCycles,
-        completedCycles: sessionState.completedCyclesCount,
+        completedCycles: finalCompletedCycles,
         status,
         countTowardStats: sessionState.countTowardStats,
         tasksTotal: sessionTasks.length,
         tasksCompleted: completedSessionTasks.length,
         taskTitles: sessionTasks.map((t) => t.title),
         completedTaskTitles: completedSessionTasks.map((t) => t.title),
+        // B-19: carry attached task ids so minute attribution also
+        // credits session tasks completed outside the timer UI.
+        taskIds: sessionTasks.map((t) => t.id),
+        wallMinutes: Math.round(wallSecs / 60),
+        pauseMinutes: Math.round(totalPauseAll / 60),
+        skippedPhases: skipped,
+        finishedEarly: finalCompletedCycles < sessionState.totalCycles,
       };
 
       onFinishSession(summary);
@@ -245,8 +274,21 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
   }, [externalFinishSignal, completeSession]);
 
   // Complete current task without stopping the timer!
+  // S-02: when a target count exists and progress is partial, confirm.
   const handleCompleteCurrentTask = useCallback(() => {
     if (!currentTask) return;
+    if (currentTask.targetCount != null && (currentTask.doneCount || 0) < currentTask.targetCount) {
+      const done = currentTask.doneCount || 0;
+      const label = currentTask.targetCountLabel || 'items';
+      if (!confirm(`"${currentTask.title}": ${done}/${currentTask.targetCount} ${label} done. Mark complete anyway? (Cancel to keep it open and log progress.)`)) {
+        const raw = prompt(`How many ${label} have you finished? (0–${currentTask.targetCount})`, String(done));
+        if (raw !== null) {
+          const n = Math.max(0, Math.min(currentTask.targetCount, parseInt(raw, 10) || 0));
+          onUpdateTask({ ...currentTask, doneCount: n });
+        }
+        return;
+      }
+    }
 
     const updatedTask: TaskItem = {
       ...currentTask,
@@ -271,48 +313,83 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
   }, [currentTask, sessionState, sessionTasks, onUpdateTask, onUpdateSessionState, playSound]);
 
   // Phase transition
+  // D4 fix: pending skip count consumed atomically inside the transition so
+  // the spread can never clobber it; transitioning guard stops double-fires.
+  const pendingSkipsRef = React.useRef(0);
+  const transitioningRef = React.useRef(false);
+  const skipTimerRef = React.useRef<number | null>(null);
+  React.useEffect(() => () => {
+    if (skipTimerRef.current) window.clearTimeout(skipTimerRef.current);
+  }, []);
+  const handleSkipPhase = useCallback(() => {
+    if (transitioningRef.current) return;
+    pendingSkipsRef.current += 1;
+    // Apply optimistically so UI reflects it even if transition is delayed.
+    const prev = (sessionStateRef.current as unknown as { skippedPhases?: number }).skippedPhases || 0;
+    onUpdateSessionState({ ...sessionStateRef.current, ...( { skippedPhases: prev + 1 } as object), accumulatedWorkSeconds: accumulatedWorkSecondsRef.current });
+    if (skipTimerRef.current) window.clearTimeout(skipTimerRef.current);
+      skipTimerRef.current = window.setTimeout(() => handlePhaseCompleteRef.current(), 0);
+  }, [onUpdateSessionState]);
+  const handlePhaseCompleteRef = React.useRef(() => {});
   const handlePhaseComplete = useCallback(() => {
+    if (transitioningRef.current) return;
+    transitioningRef.current = true;
+    try {
     if (sessionState.isChillMode) {
       playSound('complete');
       confetti({ particleCount: 80, spread: 60, origin: { y: 0.6 } });
-      completeSession('completed');
+      completeSession('completed', sessionState.totalCycles);
       return;
     }
 
     if (sessionState.phase === 'work') {
       const nextCompletedCycles = sessionState.completedCyclesCount + 1;
+      // Consume pending manual skips exactly once.
+      const pending = pendingSkipsRef.current;
+      pendingSkipsRef.current = 0;
+      const baseSkipped = (sessionState as unknown as { skippedPhases?: number }).skippedPhases || 0;
 
       if (resolveWorkCompletion(sessionState.completedCyclesCount, sessionState.totalCycles) === 'complete') {
         playSound('complete');
         confetti({ particleCount: 120, spread: 80, origin: { y: 0.5 } });
-        if (window.focusAPI?.sendNotification) {
-          window.focusAPI.sendNotification(
-            '🎯 Focus Session Completed!',
+        if (window.controlAPI?.sendNotification) {
+          window.controlAPI.sendNotification(
+            '🎯 Control Session Completed!',
             `Great job! You completed all ${sessionState.totalCycles} cycles of ${sessionState.modeName}.`
           );
         }
-        completeSession('completed');
+        completeSession('completed', nextCompletedCycles);
         return;
       }
 
-      const breakSecs = sessionState.breakDurationMins * 60;
+      const breakSecs = isLongBreakCycle(
+        sessionState.completedCyclesCount + 1,
+        sessionState.totalCycles,
+        sessionState.longBreakInterval || 0,
+        sessionState.longBreakDurationMins || 0,
+        sessionState.breakDurationMins
+      ) * 60;
+      const isLong = (sessionState.longBreakInterval || 0) > 0 && (sessionState.longBreakDurationMins || 0) > 0 && ((sessionState.completedCyclesCount + 1) % (sessionState.longBreakInterval || 1) === 0);
       playSound('break');
 
-      if (window.focusAPI?.sendNotification) {
-        window.focusAPI.sendNotification(
-          '☕ Time for a Break',
-          `Cycle ${sessionState.currentCycle} of ${sessionState.totalCycles} done. Take a ${sessionState.breakDurationMins}m break.`
+      if (window.controlAPI?.sendNotification) {
+        window.controlAPI.sendNotification(
+          isLong ? '☕ Time for a Long Break' : '☕ Time for a Break',
+          `Cycle ${sessionState.currentCycle} of ${sessionState.totalCycles} done. Take a ${Math.round(breakSecs / 60)}m ${isLong ? 'long ' : ''}break.`
         );
       }
 
       onUpdateSessionState({
         ...sessionState,
-        phase: 'short_break',
+        ...({ skippedPhases: baseSkipped + pending } as object),
+        phase: isLong ? 'long_break' : 'short_break',
         completedCyclesCount: nextCompletedCycles,
         accumulatedWorkSeconds: accumulatedWorkSecondsRef.current,
         phaseStartTime: Date.now(),
         phaseDurationSeconds: breakSecs,
         totalPauseSecondsThisPhase: 0,
+        totalPauseSecondsAllPhases: (sessionState.totalPauseSecondsAllPhases ?? 0) + sessionState.totalPauseSecondsThisPhase,
+        transitioning: false,
         isPaused: !settings.autoStartBreaks,
         pauseStartedAt: !settings.autoStartBreaks ? Date.now() : null,
       });
@@ -330,15 +407,19 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
         ? cycleTaskId
         : (remainingSessionTasks.find((t) => t.id !== cycleTaskId)?.id || sessionState.activeTaskId);
 
-      if (window.focusAPI?.sendNotification) {
-        window.focusAPI.sendNotification(
+      if (window.controlAPI?.sendNotification) {
+        window.controlAPI.sendNotification(
           '🎯 Break Ended',
           `Starting Cycle ${nextCycle} of ${sessionState.totalCycles} for ${sessionState.modeName}.`
         );
       }
 
+      const pending = pendingSkipsRef.current;
+      pendingSkipsRef.current = 0;
+      const baseSkipped = (sessionState as unknown as { skippedPhases?: number }).skippedPhases || 0;
       onUpdateSessionState({
         ...sessionState,
+        ...({ skippedPhases: baseSkipped + pending } as object),
         phase: 'work',
         currentCycle: nextCycle,
         activeTaskId: nextActiveId,
@@ -346,31 +427,54 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
         phaseStartTime: Date.now(),
         phaseDurationSeconds: workSecs,
         totalPauseSecondsThisPhase: 0,
+        totalPauseSecondsAllPhases: (sessionState.totalPauseSecondsAllPhases ?? 0) + sessionState.totalPauseSecondsThisPhase,
+        transitioning: false,
         isPaused: !settings.autoStartWork,
         pauseStartedAt: !settings.autoStartWork ? Date.now() : null,
       });
     }
+    } finally {
+      transitioningRef.current = false;
+    }
   }, [sessionState, allTasks, remainingSessionTasks, settings.autoStartBreaks, settings.autoStartWork, playSound, completeSession, onUpdateSessionState]);
+  useEffect(() => { handlePhaseCompleteRef.current = handlePhaseComplete; }, [handlePhaseComplete]);
 
+  // D5 fix: wall-clock accrual (no tick-count drift) + single atomic persist
+  // covering both work counter and dwell. D2: chill accrues like work.
+  const lastTickRef = React.useRef<number>(Date.now());
+  useEffect(() => { lastTickRef.current = Date.now(); }, [sessionState.phase, sessionState.phaseStartTime, sessionState.isPaused]);
   // Tick interval
   useEffect(() => {
     if (sessionState.isPaused) return;
+    lastTickRef.current = Date.now();
 
     const interval = setInterval(() => {
+      const now = Date.now();
+      const delta = Math.max(0, Math.floor((now - lastTickRef.current) / 1000));
+      lastTickRef.current = now;
       const remaining = calculateSecondsLeft();
       setSecondsLeft(remaining);
 
-      if (sessionState.phase === 'work') {
-        accumulatedWorkSecondsRef.current += 1;
+      if ((sessionState.phase === 'work' || sessionState.phase === 'chill') && delta > 0) {
+        accumulatedWorkSecondsRef.current += delta;
 
         // Persist the live counter into session state periodically so the
-        // accumulated focus time survives tab switches / view remounts.
-        if (accumulatedWorkSecondsRef.current % 15 === 0) {
-          const latest = sessionStateRef.current;
+        // accumulated control time survives tab switches / view remounts.
+        const latest = sessionStateRef.current;
+        const prevPersisted = latest.accumulatedWorkSeconds || 0;
+        if (accumulatedWorkSecondsRef.current - prevPersisted >= 5) {
+          // Merge dwell atomically to avoid last-writer-wins with a second timer.
+          const dwell = { ...(latest.taskDwellSeconds || {}) };
+          if (sessionState.phase === 'work' && currentTask) {
+            dwell[currentTask.id] = (dwell[currentTask.id] || 0) + (accumulatedWorkSecondsRef.current - prevPersisted);
+          }
           onUpdateSessionState({
             ...latest,
             accumulatedWorkSeconds: accumulatedWorkSecondsRef.current,
+            ...(sessionState.phase === 'work' && currentTask ? { taskDwellSeconds: dwell } : {}),
           });
+        } else if (sessionState.phase === 'work' && currentTask) {
+          // Dwell flushed on next persist; nothing to write yet.
         }
       }
 
@@ -381,7 +485,9 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [sessionState.isPaused, calculateSecondsLeft, handlePhaseComplete, onUpdateSessionState]);
+  }, [sessionState.isPaused, sessionState.phase, calculateSecondsLeft, handlePhaseComplete, onUpdateSessionState, currentTask?.id]);
+
+  // Dwell is merged atomically in the main tick above (no second timer).
 
   // Toggle Pause
   const togglePause = useCallback(() => {
@@ -395,6 +501,7 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
         pauseStartedAt: null,
         accumulatedWorkSeconds: accumulatedWorkSecondsRef.current,
         totalPauseSecondsThisPhase: sessionState.totalPauseSecondsThisPhase + pauseDuration,
+        totalPauseSecondsAllPhases: (sessionState.totalPauseSecondsAllPhases ?? 0) + pauseDuration,
       });
     } else {
       onUpdateSessionState({
@@ -409,9 +516,9 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
 
   // Listen to Tray Actions
   useEffect(() => {
-    if (!window.focusAPI?.onTrayAction) return;
+    if (!window.controlAPI?.onTrayAction) return;
 
-    const cleanup = window.focusAPI.onTrayAction((action: string) => {
+    const cleanup = window.controlAPI.onTrayAction((action: string) => {
       if (action === 'togglePause') {
         togglePause();
       } else if (action === 'nextTask') {
@@ -434,7 +541,7 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
         togglePause();
       } else if (e.key.toLowerCase() === 'n') {
         e.preventDefault();
-        handlePhaseComplete();
+        handleSkipPhase();
       } else if (e.key.toLowerCase() === 'f') {
         e.preventDefault();
         completeSession('completed');
@@ -448,7 +555,7 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [togglePause, handlePhaseComplete, completeSession, onRequestLeave]);
+  }, [togglePause, handleSkipPhase, completeSession, onRequestLeave]);
 
   // Add quick task mid-session
   const handleAddQuickTask = (e: React.FormEvent) => {
@@ -545,19 +652,6 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
 
         {/* Right Aux Controls */}
         <div className="flex items-center space-x-2">
-          {onOpenSoundControl && (
-            <button
-              onClick={onOpenSoundControl}
-              className={`p-2 rounded-full liquid-glass transition-all cursor-pointer ${
-                currentSound ? 'text-sky-400 ring-2 ring-sky-400/50 bg-sky-500/15 animate-pulse' : ''
-              }`}
-              style={{ color: currentSound ? undefined : currentTheme.textSecondary }}
-              title={currentSound ? `Ambient audio active (${currentSound}) - click to change` : 'Ambient Focus Soundscapes'}
-            >
-              <Music className="w-4 h-4" />
-            </button>
-          )}
-
           <button
             onClick={() => setIsMuted(!isMuted)}
             className="p-2 rounded-full liquid-glass transition-colors cursor-pointer"
@@ -613,7 +707,9 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
             {sessionState.isPaused
               ? 'PAUSED'
               : sessionState.phase === 'work'
-              ? 'FOCUS PERIOD'
+              ? 'CONTROL PERIOD'
+              : sessionState.phase === 'chill' || sessionState.isChillMode
+              ? 'CHILL MODE'
               : 'REST BREAK'}
           </span>
         </div>
@@ -656,7 +752,7 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
               <Sparkles className="w-3.5 h-3.5 text-sky-500" />
               <span>
                 {sessionState.isChillMode
-                  ? 'CURRENT FOCUS TARGET'
+                  ? 'CURRENT CONTROL TARGET'
                   : `CYCLE ${sessionState.currentCycle} OF ${sessionState.totalCycles} TARGET`}
               </span>
             </span>
@@ -670,7 +766,7 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
 
           {currentTask ? (
             <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
-              <span 
+              <span
                 className="text-xl font-bold text-left tracking-tight flex-1"
                 style={{ color: currentTheme.textPrimary }}
               >
@@ -691,6 +787,38 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
             <div className="text-emerald-500 text-sm font-semibold flex items-center justify-center space-x-2 py-1">
               <CheckCircle2 className="w-4 h-4" />
               <span>All queue tasks completed! Excellent work!</span>
+            </div>
+          )}
+          {currentTask?.targetCount != null && (
+            <div className="text-[11px] font-mono" style={{ color: currentTheme.textSecondary }}>
+              Progress: {currentTask.doneCount || 0}/{currentTask.targetCount} {currentTask.targetCountLabel || 'items'}
+              <button
+                className="ml-2 text-sky-500 hover:underline cursor-pointer"
+                onClick={() => {
+                  const raw = prompt(`How many ${currentTask.targetCountLabel || 'items'} done? (0–${currentTask.targetCount})`, String(currentTask.doneCount || 0));
+                  if (raw !== null) {
+                    const n = Math.max(0, Math.min(currentTask.targetCount || 0, parseInt(raw, 10) || 0));
+                    onUpdateTask({ ...currentTask, doneCount: n });
+                  }
+                }}
+              >
+                Log progress
+              </button>
+            </div>
+          )}
+          {modes && modes.length > 0 && (
+            <div className="text-[11px] font-mono flex items-center gap-2" style={{ color: currentTheme.textSecondary }}>
+              <span>Mode locked ({sessionState.modeName}) — applies to remaining cycles:</span>
+              <select
+                className="px-2 py-1 rounded-lg text-xs cursor-pointer"
+                value={sessionState.modeId}
+                onChange={(e) => onSwitchModeForRemaining?.(e.target.value)}
+                title="Switch mode for remaining cycles (current cycle keeps its timer)"
+              >
+                {modes.map((m) => (
+                  <option key={m.id} value={m.id}>{m.name} ({m.workDuration}/{m.breakDuration})</option>
+                ))}
+              </select>
             </div>
           )}
 
@@ -838,12 +966,12 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
               <span>Chill Mode — No Restrictions</span>
             </div>
           ) : sessionState.phase !== 'work' ? (
-            <div 
+            <div
               className="inline-flex items-center space-x-2 px-4 py-1.5 rounded-full liquid-glass text-xs font-semibold"
               style={{ color: currentTheme.textSecondary }}
             >
               <Coffee className="w-3.5 h-3.5" />
-              <span>Break Time — Distractions temporarily unlocked</span>
+              <span>{sessionState.allowBreakWebsites === false ? 'Break Time — Shield still armed' : 'Break Time — Distractions temporarily unlocked'}</span>
             </div>
           ) : (
             <div 
@@ -890,7 +1018,7 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
 
           {!sessionState.isChillMode && (
             <button
-              onClick={handlePhaseComplete}
+              onClick={handleSkipPhase}
               className="p-3 rounded-2xl liquid-glass transition-colors cursor-pointer"
               style={{ color: currentTheme.textSecondary }}
               title="Next Phase [N]"

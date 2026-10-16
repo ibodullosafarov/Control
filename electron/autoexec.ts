@@ -8,7 +8,7 @@ import {
   AutoExecStartRequest,
   AutoExecStartResult,
   AutoExecStatus,
-  FocusAppData,
+  ControlAppData,
 } from '../src/types';
 import {
   DEFAULT_NOTIFY_LEAD_MINUTES,
@@ -26,12 +26,12 @@ import {
 } from '../src/services/autoExecPolicy';
 
 export const AUTOEXEC_CHANNELS = {
-  getStatus: 'focus:autoExec:getStatus',
-  notifyStatus: 'focus:autoExec:notifyStatus',
-  startPush: 'focus:autoExec:start',
-  startReply: 'focus:autoExec:startResult',
-  endPush: 'focus:autoExec:end',
-  endReply: 'focus:autoExec:endResult',
+  getStatus: 'control:autoExec:getStatus',
+  notifyStatus: 'control:autoExec:notifyStatus',
+  startPush: 'control:autoExec:start',
+  startReply: 'control:autoExec:startResult',
+  endPush: 'control:autoExec:end',
+  endReply: 'control:autoExec:endResult',
 } as const;
 
 const ROUND_TRIP_TIMEOUT_MS = 20_000;
@@ -43,11 +43,11 @@ interface AutoExecStateFile {
 }
 
 export interface AutoExecServiceOptions {
-  /** Currently focused app window (source of renderer round-trips). */
+  /** Currently controlled app window (source of renderer round-trips). */
   getWindow(): BrowserWindow | null;
   /** Fresh persisted app data (plans, modes, settings). */
-  getData(): FocusAppData;
-  /** Directory for the execution state file. Defaults to ~/.focus-app. */
+  getData(): ControlAppData;
+  /** Directory for the execution state file. Defaults to ~/.control-app. */
   dataDir?: string;
   /** Bring the app to the foreground (notification click). */
   showWindow(): void;
@@ -63,7 +63,7 @@ const log = {
  *
  * Survives hidden windows and menu-bar mode: it reads plans/modes/settings
  * straight from the data store, fires absolute-timestamp timers, sends native
- * Notifications, and asks the renderer to start/end focus sessions through a
+ * Notifications, and asks the renderer to start/end control sessions through a
  * request/reply round-trip (the renderer stays authoritative: an active
  * manual session always wins). Branching rules live in
  * `src/services/autoExecPolicy.ts` (unit-tested); this class only executes.
@@ -87,7 +87,7 @@ export class AutoExecService {
 
   constructor(private readonly opts: AutoExecServiceOptions) {
     const home = process.env.HOME || process.env.USERPROFILE || '.';
-    this.dataDir = opts.dataDir ?? path.join(home, '.focus-app');
+    this.dataDir = opts.dataDir ?? path.join(home, '.control-app');
   }
 
   // ── State file ─────────────────────────────────────────────────────────────
@@ -260,12 +260,12 @@ export class AutoExecService {
     };
   }
 
-  private safeGetData(): FocusAppData {
+  private safeGetData(): ControlAppData {
     try {
       return this.opts.getData();
     } catch (err) {
       log.warn('Failed to read app data', err instanceof Error ? err.message : err);
-      return { modes: [], sessions: [], tasks: [], activeSession: null, settings: {} as FocusAppData['settings'], plans: {} };
+      return { modes: [], sessions: [], tasks: [], activeSession: null, settings: {} as ControlAppData['settings'], plans: {} };
     }
   }
 
@@ -397,7 +397,7 @@ export class AutoExecService {
         return;
       }
       const note = new Notification({
-        title: 'Control — upcoming focus session',
+        title: 'Control — upcoming control session',
         body: reminderBody(occ.title, leadMinutes),
       });
       note.on('click', () => {

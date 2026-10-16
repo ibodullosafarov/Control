@@ -1,233 +1,306 @@
-# Control — Personal Study & Deep Work System for macOS
+# Control
 
-> **A typography-first, distraction-free personal study and deep work operating system built exclusively for macOS.**  
-> Inspired by the precision of *Monkeytype*, the instant speed of *Raycast*, and the fluid liquid-glass depth of macOS Sequoia.
+**Your personal study and deep-work system for macOS.**
 
----
+Control brings your tasks, control sessions, website blocking, study planning, and progress into one place — so you can spend less time managing productivity and more time actually working.
 
-## 💡 The Control Difference
-
-Browser-extension blockers are easy to bypass — one tab, one Settings click, and they're gone. Control is
-**native to the machine**, so it can't be clicked around:
-
-- **Kills it at the network layer** — writes real `/etc/hosts` rules, which no browser can ignore.
-- **Kills it at the process layer** — actually terminates and re-terminates distracting apps (Discord, Slack, X, Steam…).
-- **Survives the "but I need it" moment** — an optional bridge to SelfControl for un-cancellable lockdowns.
-- **Zero AI, 100% deterministic** — the day planner computes optimal focus windows with math, never hallucination.
-- **All data stays on your Mac** — no telemetry, no cloud account, no dark patterns. Control respects your
-  autonomy: instant exit, no forced timers.
+No accounts. No AI features. No unnecessary complexity. Just your workspace, your rules, and your time.
 
 ---
 
-## ⚡ Quick Start
+## What is Control?
 
-### 1. Launch the Native macOS Application
-If installed in `/Applications`:
-```bash
-open /Applications/Control.app
-```
-Or launch the prebuilt standalone release binary directly:
-```bash
-open release/mac-arm64/Control.app
-```
+Control is a macOS desktop application designed to help you build a consistent study routine and protect your attention.
 
-### 2. Run from Source (Development / Instant Start)
+Instead of juggling a task manager, a timer, a website blocker, and a calendar, Control brings these tools together in one controlled workspace.
+
+## Features
+
+### Tasks
+- Build and organize a queue of tasks.
+- Arrange tasks in the order you want to complete them.
+- Associate tasks with your study modes.
+- Keep your next action clear instead of deciding what to do every time you finish something.
+
+### Control Timer
+- Run controlled work sessions with configurable breaks and cycles.
+- Use custom study modes for different activities.
+- Track your recorded work time.
+- Get audio cues to help you recognize session transitions.
+
+### Shield
+- Block distracting websites during control sessions.
+- Block selected desktop applications.
+- Integrate with SelfControl where configured.
+- Automatically coordinate blocking with your control and break sessions.
+
+**Important:** Website and application blocking may require administrator authorization and additional system configuration. Blocking behavior depends on your settings and the configured integrations.
+
+### Day Planner
+- Plan your day around scheduled work.
+- Organize study sessions into a deterministic daily schedule.
+- Connect planning with your control modes and timers.
+- Integrate with Google Calendar and export calendar events through `.ics` files.
+
+### Modes
+Create study modes for different types of work.
+
+A mode can define the control interval, break duration, number of cycles, accent color, and associated blocking configuration.
+
+For example, you could create separate modes for Math, English, Vocabulary, or a longer deep-work session.
+
+Modes let you adapt your workflow to the task instead of forcing every activity into the same timer.
+
+### Obsidian Templates
+If you use Obsidian, you can organize your study plans with Markdown templates.
+
+Control supports template-based workflows for turning Markdown plans into scheduled sessions or applying checklists to daily notes.
+
+The scheduling workflow can use session durations, start times, timer settings, control modes, and other supported fields. Review the parsed schedule before applying it.
+
+Control can work with a configured Obsidian vault using these locations:
+
+- `Control/Templates` — reusable templates.
+- `Control/Days` — generated daily notes.
+- `Control/Tasks` — task notes.
+
+Template behavior depends on the format you use. Consult the template documentation for supported syntax and examples.
+
+### Google Calendar
+Connect your Google Calendar to coordinate your external schedule with your study plan.
+
+- Synchronize supported planned sessions.
+- Use calendar events as part of your daily workflow.
+- Export events using `.ics` files.
+
+Google Calendar integration requires configuration and authorization. It is optional; you can use Control without connecting a calendar.
+
+### Statistics
+Review your recorded study activity and work history to understand how you spend your time.
+
+### Menu Bar
+Keep Control running in the background and access its live countdown from the macOS menu bar.
+
+### Personalization
+- Choose from 13 built-in themes.
+- Configure your study modes and blocking preferences.
+- Customize your workspace without needing an online account.
+
+---
+
+## Installation
+
+Control is built for macOS and currently targets Apple Silicon.
+
+### Requirements
+
+- A Mac with Apple Silicon.
+- macOS 13 or later.
+- Additional permissions for features such as website and application blocking.
+
+### Install from a DMG
+
+1. Download the `Control-1.0.0-arm64.dmg` release.
+2. Open the downloaded DMG.
+3. Follow the installation instructions provided with the release.
+4. Launch Control from your Applications folder.
+
+### macOS security warning
+
+The current release is ad-hoc signed and is not notarized by Apple. macOS may warn you when opening it.
+
+This does not automatically mean the application is malicious, but it does mean the release has not passed Apple's notarization process.
+
+Only install software from a source you trust. If macOS blocks the application, review the warning and the release's authenticity before deciding whether to proceed.
+
+---
+
+## Getting started
+
+You do not need to configure everything before using Control. Start with the essentials.
+
+### 1. Set up your first tasks
+
+Open the Tasks section and add the work you want to complete.
+
+Keep tasks concrete. For example:
+
+- Solve 25 SAT Math questions.
+- Complete an English practice set.
+- Review vocabulary.
+- Correct mistakes from yesterday.
+
+Arrange them in your preferred order.
+
+### 2. Configure a study mode
+
+Open Modes and choose an existing configuration or create your own.
+
+Set the control interval, break duration, and number of cycles that fit your work. You can use different modes for different subjects.
+
+### 3. Start a control session
+
+Choose your task, start the timer, and work through the session.
+
+If you use Shield, configure your blocking preferences before relying on it to protect a session.
+
+### 4. Plan your day
+
+Use the Day Planner to arrange your work into a realistic schedule.
+
+If you already plan in Obsidian, configure your vault and use the supported Markdown template workflow instead of manually recreating every session.
+
+### 5. Review your progress
+
+Use Stats and your recorded history to see how your study sessions are going.
+
+The goal isn't to fill every minute of your day. It's to make the time you spend working more intentional.
+
+---
+
+## Google Calendar setup
+
+Google Calendar is optional.
+
+To connect it:
+
+1. Open Control's settings and locate the Google Calendar configuration.
+2. Follow the documented Google OAuth setup.
+3. Enable the Google Calendar API for the associated Google Cloud project.
+4. Configure the appropriate OAuth client credentials.
+5. Complete authorization and verify synchronization with a test event.
+
+Google's OAuth configuration can vary depending on the client type and account setup. Follow the current setup guide rather than sharing credentials or tokens with other people.
+
+---
+
+## Data and privacy
+
+Control is designed around local use.
+
+- **No Control account required.**
+- **No AI features.**
+- Application data is stored locally.
+- The application's main JSON data file is located at `~/.control-app/data.json`.
+- Google Calendar synchronization is optional and communicates with Google when configured.
+- Blocking integrations can interact with system-level configuration on your Mac.
+
+Your local application data and your synchronized Google Calendar data are separate things. Removing local application data does not necessarily remove events already created in Google Calendar.
+
+### Back up your data
+
+Before reinstalling Control, changing configurations, or troubleshooting data issues, keep a copy of important local data.
+
+At minimum, back up:
+
+`~/.control-app/data.json`
+
+Also preserve any external files you depend on, such as your Obsidian vault, templates, and Google OAuth configuration.
+
+Do not share OAuth credentials or secrets when requesting support.
+
+---
+
+## Troubleshooting
+
+### Control won't open
+
+The release may trigger macOS security warnings because it is not notarized. Verify that you obtained the correct release and review macOS's security guidance before proceeding.
+
+### Website blocking doesn't work
+
+Check that the required permissions and blocking configuration are in place. If your setup uses SelfControl, verify that its command-line integration is installed and configured.
+
+### Google Calendar doesn't synchronize
+
+Check your internet connection, Google Cloud API settings, OAuth client configuration, and authorization status. Make sure the Google Calendar API is enabled.
+
+### My Obsidian template isn't parsed correctly
+
+Verify that the template follows a supported format, that the correct vault is configured, and that referenced modes exist in Control. Preview the schedule before applying it.
+
+### My data appears to be missing
+
+Check the local application data directory and any backups before attempting a reset or reinstall. Avoid deleting application data while troubleshooting.
+
+---
+
+## Building from source
+
+Control is built with:
+
+- Electron 44
+- React 19
+- TypeScript
+- Vite 8
+- Tailwind CSS 4
+- Electron Builder
+
+### Prerequisites
+
+- Node.js and npm.
+- Git, if cloning a repository.
+- macOS and the dependencies required by the project.
+
+### Development
+
+Clone the repository, enter the project directory, and install dependencies:
+
 ```bash
 npm install
+```
+
+Start the development environment:
+
+```bash
 npm run dev
-# Or run the built production client:
+```
+
+To launch the built application using the project's start script:
+
+```bash
 npm start
 ```
 
-### 3. Rebuild Application Bundle & DMG Installer
-Whenever you make updates, generate the fresh `.app` bundle and `.dmg` installer:
+### Build a DMG
+
 ```bash
 npm run package:dmg
 ```
-To install it directly to `/Applications`:
-```bash
-npm run install:app
-```
+
+The release output is written to the project's `release` directory. The current documented release is `Control-1.0.0-arm64.dmg`.
+
+For the exact supported architectures and packaging requirements, refer to the release configuration in the source repository.
 
 ---
 
-## 🧭 How to Use Control Effectively (The Masterclass Guide)
+## Project philosophy
 
-Control is engineered to eliminate the mental friction of starting, eliminate the trap of endless digital distractions, and protect your deepest cognitive states. Follow this systematic workflow to achieve effortless flow every day.
+Control is built around a few simple principles:
 
-```
-1. Morning Kickoff  ──▶  2. Select Mode  ──▶  3. Shield Up  ──▶  4. Deep Focus  ──▶  5. Zen Break  ──▶  6. Review & Log
- (Queue Priorities)      (Lesson / Deep)       (Web & Apps)       (Binaural/Halo)     (Acoustic Chime)    (Stats & History)
-```
+- **Control over complexity.** The interface should help you start working, not become another project to manage.
+- **Local-first.** Your essential workflow should not require an account or an AI service.
+- **Your rules.** Configure your modes, schedules, and blocking preferences around the way you study.
+- **One workspace.** Tasks, timers, planning, and control protection should work together.
+- **Practical productivity.** The goal is meaningful work, not maximizing the number of productivity features you use.
 
----
-
-### Phase 1: The Morning Kickoff & Priority Queue (`Tab [1]`)
-Most procrastination happens because your brain doesn't know what to do next. When you open your Mac, Control greets you dynamically:
-1. **Add Your Daily Tasks**: Type your priority into the quick-add bar and press `[Enter]`.
-2. **Assign Specific Study Modes**: Control allows you to tag tasks with specific study modes (e.g. *Math Homework* tagged to **Homework Mode**, *Code Refactor* tagged to **Deep Study**).
-3. **Order Your Queue**: Use the `[▲]` and `[▼]` promotion arrows to place your highest-leverage task at the very top under **Current Focus Target**.
-4. **Follow the Visual Pipeline**:
-   - `1. Write Tasks` → `2. Plan My Day` → `3. Distraction Shield`.
+Control is not intended to turn every moment into work. Breaks, flexibility, and realistic plans matter too.
 
 ---
 
-### Phase 2: Choosing or Crafting Your Focus Mode (`Tab [5]`)
-Control does not enforce rigid 25-minute Pomodoro timers if your work demands longer immersion. Choose the mode that matches your cognitive load:
+## Feedback and contributions
 
-| Mode | Work Duration | Break Duration | Cycles | Best For |
-|---|---|---|---|---|
-| **Current Lesson** | 45 min | 10 min | 3 cycles | Structured lecture review, online courses |
-| **Homework** | 50 min | 10 min | 2 cycles | Problem sets, assignments, essays |
-| **Deep Study** | 60 min | 15 min | 2 cycles | Intense programming, thesis writing, research |
-| **Chess / Sprint** | 25 min | 15 min | 2 cycles | Rapid tactical practice, rapid problem drills |
-| **Chill / Free Time** | 30 min | 0 min | 1 cycle | Guilt-free leisure, browsing (no blocking) |
+Control is an evolving personal project. Feedback, bug reports, and suggestions are welcome.
 
-> 💡 **Custom Study Modes**: Click **Modes [5]** to create unlimited custom modes with tailored cycle lengths, customized work intervals, dedicated app blocklists, and custom accent colors.
+When reporting an issue, include:
 
----
+- Your macOS version.
+- Your Control version.
+- The steps needed to reproduce the issue.
+- Any relevant error messages or logs.
 
-### Phase 3: Native Distraction Shielding (`Tab [3]`)
-Distraction blockers that rely on browser extensions are easily bypassed. Control uses a **native two-tier system engine**:
-1. **Network Layer (DNS / Hosts)**:
-   - Safely updates `/etc/hosts` routing rules between managed tags and flushes macOS mDNSResponder caches.
-   - Prevents access across **all browsers** (Safari, Chrome, Brave, Arc, Firefox).
-2. **Process Layer (Native macOS App Lockdown)**:
-   - Add native desktop apps that derail you (e.g. *Discord*, *Slack*, *Telegram*, *Steam*, *Twitter*).
-   - When a focus work cycle begins, Control automatically minimizes or terminates distracting app processes.
-3. **Break-Aware Automation**:
-   - When your timer switches from **Work** to **Break**, Control **automatically unblocks** websites and apps so you can check messages guilt-free.
-   - When the break ends and the next work cycle begins, the shield re-engages instantly.
-4. **Hardcore SelfControl Bridge**:
-   - For high-stakes study sessions, Control provides direct integration with the native `selfcontrol-cli` daemon for un-cancellable system lockdowns.
+Never include passwords, OAuth secrets, access tokens, or private personal data in a bug report.
 
 ---
 
-### Phase 4: Entering The Zone (The Active Session View `Tab [2]`)
-Once you launch a session by clicking **Focus** on a task or pressing `[Enter]`:
-- **Minimalist Tabular Countdown**: High-contrast, large digital clock with breathing ambient glow (`timer-halo-pulse`).
-- **One-Target Focus Spotlight**: Displays your current active task right under the timer. Check it off when done with `[Mark Done]` to trigger a celebratory confetti burst and automatically advance to the next queued item.
-- **Zen Focus Audio (Ambient Soundscapes)**:
-  - Click the **Music** button in the header (or in the session dock) to layer background sound:
-    - 🌧️ **Gentle Rain & Distant Thunder**: Blocks erratic background room noise.
-    - ☕ **Cozy Coffee House**: Subtle murmur that boosts creative linguistic flow.
-    - 🌲 **Pine Forest & Birds**: Relaxes tension during high-stress problem solving.
-    - 📼 **Lo-Fi Vinyl Crackle**: Rhythmic warmth for extended study endurance.
-    - 🌊 **Pacific Ocean Waves**: Calming rhythmic cadence.
-    - 📻 **Pink / White Noise**: Maximum auditory masking for pure logical thinking.
-- **Harmonic Acoustic Cues**:
-  - Pure synthesized Tibetan singing bowls on break transitions.
-  - Delicate chime pairs on work intervals.
-  - Celebratory fanfare upon complete session mastery.
-
----
-
-### Phase 5: Instant Exit & Background Run (Zero Time Restriction)
-Control respects your autonomy:
-- **No Close Restrictions**: The previous 30-second forced countdown delay has been **completely removed**.
-- **Instant Exit**: When you click **Exit** or press `[Esc]`, you can immediately confirm exit with **one click** (`End Session & Exit App Immediately`). Control cleanly restores `/etc/hosts`, unblocks applications, stops background soundscapes, and exits cleanly.
-- **Run in Background (`Minimize to Menu Bar`)**:
-  - Need your full screen for Xcode, VS Code, or an IDE?
-  - Click **Minimize to Menu Bar** in the exit dialog or close the window. Control will minimize to the macOS status bar tray.
-  - The tray icon dynamically displays live time remaining: ` 24:18 (Deep Study)`.
-  - Click the tray item anytime to pause, advance tasks, or reopen full-screen Control.
-
----
-
-### Phase 6: Deterministic Day Planner (`Tab [4]`)
-- **100% Deterministic (No AI Hallucinations)**: Calculates optimal focus windows, break buffers, and cycle allocations mathematically based on your available hours.
-- **Google Calendar Direct Sync**: Exports your approved study schedule directly to your Google Calendar.
-- **Apple Calendar (.ics) Export**: Generates standard `.ics` calendar files that open directly in macOS Apple Calendar.
-
----
-
-### Phase 7: History & Flow Analytics (`Tab [6]`)
-- Tracks total hours focused, daily streak records, cycle completion rate, and completed task archives.
-- All analytics are computed locally on your device.
-
----
-
-## ⌨️ Global Keyboard Shortcuts Master Cheat Sheet
-
-| Shortcut | Context | Action |
-|---|---|---|
-| `⌘K` | Anywhere | Open Spotlight Omni Command Palette |
-| `⌘1` – `⌘7` | Anywhere | Instant Tab Navigation (Tasks, Timer, Shield, Planner, Modes, Stats, Settings) |
-| `[Enter]` | Tasks Hub | Add new task & select mode |
-| `[Shift + Enter]` | Tasks Hub | Quick-queue task without modal |
-| `[Space]` | Active Timer | Pause / Resume Active Focus Session |
-| `[N]` | Active Timer | Skip to Next Phase (Cycle / Break) |
-| `[F]` | Active Timer | Finish & Record Session Early |
-| `[Esc]` | Active Timer | Open Instant Exit Dialog / Dismiss |
-| `[M]` | Active Timer | Mute / Unmute Acoustic Bells |
-| `[P]` | Anywhere | Open Day Planner |
-| `[C]` | Anywhere | Start Quick 30m Chill Leisure Session |
-
----
-
-## 🎨 Maximally Modern Visual Themes
-
-Control features 13 hyper-refined liquid-glass themes with multi-layered frosted blurs and specular edge lighting:
-
-### Dark Suites (OLED & Ambient Glow)
-- **Obsidian Aurora** *(Default)* — Deep midnight blue with electric cyan neon accents.
-- **OLED Cyber Carbon** — Pure `#000000` pitch blacks with warm amber highlights.
-- **Glacier Frost** — Nordic arctic blues with crisp ice highlights.
-- **Matrix Jade** — Emerald phosphor terminal aesthetic.
-- **Tokyo Neon Violet** — Cyberpunk lavender and neon violet glows.
-- **Sunset Rose** — Twilight plum with warm rose quartz glow.
-- **Deep Abyss** — Sub-oceanic high-contrast blue.
-- **Solar Espresso** — Warm mocha roast with golden solar accents.
-
-### Light Suites (Paper & Natural Clarity)
-- **Modern Minimal** — Crisp slate whites with royal blue highlights.
-- **Soft Paper** — Warm parchment tones with sepia contrast (gentle on eyes in daylight).
-- **Liquid Pearl** — Frosted translucent glass with sky blue highlights.
-- **Matcha Zen** — Soothing organic green tea tones.
-- **Lavender Mist** — Pastel purple mist with violet accents.
-
-Toggle between light and dark modes anytime with the animated **Sun / Moon** button in the header.
-
-### ♿ Accessibility Built In
-- **Reduce Animations & Motion** — disables all motion-blur effects, ambient orbs, and state transitions for a calm, instant UI (Settings → User Profile).
-- **Dyslexia-Friendly Typography** — one toggle swaps the UI to *Atkinson Hyperlegible*, a high-legibility typeface designed for easier reading.
-- **Keyboard-first** — full global shortcut map below; every core action is reachable without a mouse.
-
----
-
-## 🔒 Local-First Privacy & Architecture
-
-All application data is stored 100% locally on your Mac:
-- **Location**: `~/.focus-app/data.json`
-- **Zero External Telemetry**: No third-party tracking scripts, no cloud logins required.
-- **Safe Host File Teardown**: Whenever Control closes, crashes, or unblocks, original `/etc/hosts` integrity is verified and restored.
-- **One-Click Backup & Restore**: Export your full task history, custom modes, and planner configs to a single `.json` file anytime in **Settings [7]**.
-
----
-
-## 🛠️ Tech Stack
-
-- **Runtime**: Electron 44 (Native macOS ARM64 / Intel)
-- **Frontend**: React 19, TypeScript 7, Vite 8
-- **Styling**: Tailwind CSS 4, Liquid-Glass frosted glassmorphic design system
-- **Icons & Graphics**: Lucide React, Simple Icons, Canvas Confetti
-- **Audio Engine**: Web Audio API (Native acoustic synthesizer + multi-track ambient sound generator)
-- **Packager**: Electron Builder
-
----
-
-## 🗺️ Roadmap (Active Working Set)
-
-Because this is a local-first app, each item below ships with full privacy preserved:
-
-- **Launch readiness** — code signing + Apple notarization so installs don't fight Gatekeeper, then automatic in-app updates.
-- **Public GitHub** — source, issue tracker, changelog, and community-shared day templates.
-- **End-of-day focus report** — a one-line daily digest (hours, tasks closed, best window) delivered to your notification centre.
-- **Template gallery on launch** — curated day-plans (exam sprints, thesis weeks, coding marathons, language study) ready in one click.
-- **Focus insights** — time-of-day heatmaps and "your best focus hours" surfaced in History.
-
-> **Suggested next steps for contributors:** sign/notarize the build, wire `electron-updater` to GitHub Releases, and flesh out the template gallery.
-
----
-
-*Engineered with precision for peak human performance.*
+**Control — Take control of your time.**

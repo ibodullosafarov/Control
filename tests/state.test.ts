@@ -12,7 +12,7 @@ import { emptySyncState, SyncState } from '../electron/google/types';
 const tmpDirs: string[] = [];
 
 function tmpFile(name = 'state.json'): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'focus-gcal-state-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'control-gcal-state-'));
   tmpDirs.push(dir);
   return path.join(dir, name);
 }

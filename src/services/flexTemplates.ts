@@ -1,5 +1,5 @@
 import { ScheduleBlock, StudyMode } from '../types';
-import { extractVariables, parseFrontmatter } from './scheduleTemplates';
+import { extractVariables, isBreakTitle, parseFrontmatter } from './scheduleTemplates';
 
 /**
  * Flexible Markdown templates ("absolute-time" format).
@@ -419,6 +419,10 @@ export function applyFlexTemplate(
     const times = effectiveTimes.get(t.order)!;
     const duration = toMinutes(times.end) - toMinutes(times.start);
     const detail = t.notes.map((n) => substitute(n, config.date, variables)).filter((n) => n.trim());
+    // B-09/B-16: a break-titled event is rest, never control work — matches
+    // "Break", "Break: wind down" and "Long Break", but not a leading
+    // verb like "Break down 50 problems".
+    const isBreak = isBreakTitle(title);
     return {
       id: `block-${nowMs.toString(36)}-${salt()}`,
       date: config.date,
@@ -428,12 +432,12 @@ export function applyFlexTemplate(
       modeName: title,
       modeIcon: mode.icon,
       modeColor: mode.color,
-      workDuration: duration,
-      breakDuration: 0,
+      workDuration: isBreak ? 0 : duration,
+      breakDuration: isBreak ? duration : 0,
       cycles: 1,
       status: 'approved' as const,
       ...(detail.length > 0 ? { description: detail.join(' · ') } : {}),
-      timerEnabled: true,
+      timerEnabled: isBreak ? false : true,
       originTemplate: template.name,
       originTemplateAppliedAt: appliedAt,
       source: 'control' as const,

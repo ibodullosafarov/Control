@@ -49,11 +49,11 @@ vi.mock('electron', () => {
 });
 
 import { AutoExecService } from '../electron/autoexec';
-import { FocusAppData, ScheduleBlock, StudyMode } from '../src/types';
+import { ControlAppData, ScheduleBlock, StudyMode } from '../src/types';
 
 const tmpDirs: string[] = [];
 function tmpDir(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'focus-autoexec-svc-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'control-autoexec-svc-'));
   tmpDirs.push(dir);
   return dir;
 }
@@ -86,7 +86,7 @@ function makeBlock(id: string, start: string, end: string): ScheduleBlock {
   };
 }
 
-function makeData(blocks: ScheduleBlock[], enabled = true): FocusAppData {
+function makeData(blocks: ScheduleBlock[], enabled = true): ControlAppData {
   return {
     modes: [makeMode()],
     sessions: [],
@@ -97,9 +97,9 @@ function makeData(blocks: ScheduleBlock[], enabled = true): FocusAppData {
       autoStartBreaks: true, autoStartWork: true, defaultModeId: 'm1',
       blockingEnabled: false, blockingStrategy: 'none',
       googleCalendar: { connected: false, calendarId: 'primary' },
-      minimalModeOnFocus: false,
+      minimalModeOnControl: false,
       autoExecute: { enabled, notifyLeadMinutes: 5 },
-    } as FocusAppData['settings'],
+    } as ControlAppData['settings'],
     plans: {
       [localToday()]: {
         date: localToday(), goals: [], timeWindows: [], blocks,
@@ -112,7 +112,7 @@ function makeData(blocks: ScheduleBlock[], enabled = true): FocusAppData {
 interface Harness {
   service: AutoExecService;
   dir: string;
-  data: { current: FocusAppData };
+  data: { current: ControlAppData };
   ackStart: (started?: boolean, reason?: string) => Promise<void>;
   ackEnd: (ended?: boolean) => Promise<void>;
   records: () => Record<string, Record<string, unknown>>;
@@ -145,17 +145,17 @@ function setup(blocks: ScheduleBlock[], enabled = true): Harness {
     dir,
     data,
     ackStart: async (started = true, reason?: string) => {
-      const payload = lastPayload('focus:autoExec:start');
+      const payload = lastPayload('control:autoExec:start');
       expect(payload).toBeDefined();
-      const fn = ipcHandlers.get('focus:autoExec:startResult');
+      const fn = ipcHandlers.get('control:autoExec:startResult');
       expect(fn).toBeDefined();
       await fn!(undefined, { success: true, started, ...(reason ? { reason } : {}) }, payload!.requestId);
       await vi.advanceTimersByTimeAsync(0);
     },
     ackEnd: async (ended = true) => {
-      const payload = lastPayload('focus:autoExec:end');
+      const payload = lastPayload('control:autoExec:end');
       expect(payload).toBeDefined();
-      const fn = ipcHandlers.get('focus:autoExec:endResult');
+      const fn = ipcHandlers.get('control:autoExec:endResult');
       expect(fn).toBeDefined();
       await fn!(undefined, { success: true, ended }, payload!.requestId);
       await vi.advanceTimersByTimeAsync(0);
@@ -200,7 +200,7 @@ describe('AutoExecService scheduling', () => {
 
     // 14:00 — start request carries block identity + request id.
     await vi.advanceTimersByTimeAsync(3 * 60_000);
-    const start = sentMessages.filter((m) => m.channel === 'focus:autoExec:start');
+    const start = sentMessages.filter((m) => m.channel === 'control:autoExec:start');
     expect(start).toHaveLength(1);
     const payload = start[0].payload as { blockId: string; date: string; requestId: string };
     expect(payload.blockId).toBe('b1');
@@ -212,11 +212,11 @@ describe('AutoExecService scheduling', () => {
 
     // No second start while running.
     await vi.advanceTimersByTimeAsync(10 * 60_000);
-    expect(sentMessages.filter((m) => m.channel === 'focus:autoExec:start')).toHaveLength(1);
+    expect(sentMessages.filter((m) => m.channel === 'control:autoExec:start')).toHaveLength(1);
 
     // 15:00 — end request; ack completes the occurrence.
     await vi.advanceTimersByTimeAsync(50 * 60_000);
-    expect(sentMessages.filter((m) => m.channel === 'focus:autoExec:end')).toHaveLength(1);
+    expect(sentMessages.filter((m) => m.channel === 'control:autoExec:end')).toHaveLength(1);
     await h.ackEnd(true);
     expect(h.records()['b1|' + localToday() + '|14:00'].endedAt).toBeDefined();
     h.service.stop();
@@ -242,7 +242,7 @@ describe('AutoExecService scheduling', () => {
     expect(rec.skipReason).toBe('session-active');
     // Terminal: no retries later.
     await vi.advanceTimersByTimeAsync(30 * 60_000);
-    expect(sentMessages.filter((m) => m.channel === 'focus:autoExec:start')).toHaveLength(1);
+    expect(sentMessages.filter((m) => m.channel === 'control:autoExec:start')).toHaveLength(1);
     h.service.stop();
   });
 
@@ -259,7 +259,7 @@ describe('AutoExecService scheduling', () => {
     await vi.advanceTimersByTimeAsync(61 * 60_000);
     expect(notifications).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(2 * 3600_000);
-    const starts = sentMessages.filter((m) => m.channel === 'focus:autoExec:start');
+    const starts = sentMessages.filter((m) => m.channel === 'control:autoExec:start');
     expect(starts).toHaveLength(1);
     h.service.stop();
   });
@@ -290,7 +290,7 @@ describe('AutoExecService scheduling', () => {
     await vi.advanceTimersByTimeAsync(4000 + 65_000);
     // No duplicate notification, no late start — terminal skip instead.
     expect(notifications).toHaveLength(0);
-    expect(sentMessages.filter((m) => m.channel === 'focus:autoExec:start')).toHaveLength(0);
+    expect(sentMessages.filter((m) => m.channel === 'control:autoExec:start')).toHaveLength(0);
     const recs = JSON.parse(
       fs.readFileSync(path.join(h1.dir, 'autoexec', 'state.json'), 'utf-8')
     ) as { records: Record<string, { skippedAt?: string; skipReason?: string }> };

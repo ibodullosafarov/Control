@@ -1,184 +1,235 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import {
-  FocusAppData, ScheduleBlock, GoogleCalendarConfig, BlockingStrategy, BlockerStatus,
+  ControlAppData, ScheduleBlock, GoogleCalendarConfig, BlockingStrategy, BlockerStatus,
   AppBlockerStatus, InstalledAppInfo, TraySessionInfo, PurposeSessionRequest, TaskItem,
   StudyMode, ObsidianConfig, ObsidianSyncResult, TasksMdReadResult, PlannerMdStatus, PlannerTemplate,
   DayMarkdownPlan, ApplyTemplateResult, PlannerMdOpResult, PlannerMdTaskOpResult,
-  PlannerFileChangeEvent,
+  PlannerFileChangeEvent, ActivitySample, DistractionEvent, Note, NoteFolder, RoomTimerState, RoomsStatus, RoomsEvent,
   GoogleSyncStatus, GoogleApplyMutations, GoogleApplyResult, GoogleConnectResult,
   GoogleDisconnectResult, GoogleListCalendarsResult, GoogleSyncNowResult,
   AutoExecStatus, AutoExecStartRequest, AutoExecStartResult, AutoExecEndRequest, AutoExecEndResult,
 } from '../src/types';
 
-contextBridge.exposeInMainWorld('focusAPI', {
-  getData: (): Promise<FocusAppData> => ipcRenderer.invoke('focus:getData'),
-  saveData: (data: FocusAppData): Promise<boolean> => ipcRenderer.invoke('focus:saveData', data),
+contextBridge.exposeInMainWorld('controlAPI', {
+  getData: (): Promise<ControlAppData> => ipcRenderer.invoke('control:getData'),
+  saveData: (data: ControlAppData): Promise<boolean> => ipcRenderer.invoke('control:saveData', data),
   startBlocking: (domains: string[], strategy: BlockingStrategy): Promise<{ success: boolean; error?: string }> =>
-    ipcRenderer.invoke('focus:startBlocking', domains, strategy),
-  stopBlocking: (): Promise<{ success: boolean; error?: string }> => ipcRenderer.invoke('focus:stopBlocking'),
-  getBlockerStatus: (): Promise<BlockerStatus> => ipcRenderer.invoke('focus:getBlockerStatus'),
+    ipcRenderer.invoke('control:startBlocking', domains, strategy),
+  stopBlocking: (): Promise<{ success: boolean; error?: string }> => ipcRenderer.invoke('control:stopBlocking'),
+  getBlockerStatus: (): Promise<BlockerStatus> => ipcRenderer.invoke('control:getBlockerStatus'),
   startAppBlocking: (apps: string[]): Promise<{ success: boolean; error?: string }> =>
-    ipcRenderer.invoke('focus:startAppBlocking', apps),
+    ipcRenderer.invoke('control:startAppBlocking', apps),
   stopAppBlocking: (): Promise<{ success: boolean; error?: string }> =>
-    ipcRenderer.invoke('focus:stopAppBlocking'),
+    ipcRenderer.invoke('control:stopAppBlocking'),
   getAppBlockerStatus: (): Promise<AppBlockerStatus> =>
-    ipcRenderer.invoke('focus:getAppBlockerStatus'),
+    ipcRenderer.invoke('control:getAppBlockerStatus'),
   searchInstalledApps: (query: string): Promise<InstalledAppInfo[]> =>
-    ipcRenderer.invoke('focus:searchInstalledApps', query),
+    ipcRenderer.invoke('control:searchInstalledApps', query),
   updateTraySession: (info: TraySessionInfo): Promise<void> =>
-    ipcRenderer.invoke('focus:updateTraySession', info),
+    ipcRenderer.invoke('control:updateTraySession', info),
   updateTray: (text: string, title?: string, tooltip?: string): Promise<void> =>
-    ipcRenderer.invoke('focus:updateTray', text, title, tooltip),
+    ipcRenderer.invoke('control:updateTray', text, title, tooltip),
   sendNotification: (title: string, body: string): Promise<void> =>
-    ipcRenderer.invoke('focus:sendNotification', title, body),
+    ipcRenderer.invoke('control:sendNotification', title, body),
   setMinimalWindow: (isMinimal: boolean): Promise<void> =>
-    ipcRenderer.invoke('focus:setMinimalWindow', isMinimal),
+    ipcRenderer.invoke('control:setMinimalWindow', isMinimal),
   syncToGoogleCalendar: (blocks: ScheduleBlock[], config: GoogleCalendarConfig): Promise<{ success: boolean; syncedCount: number; error?: string }> =>
-    ipcRenderer.invoke('focus:syncToGoogleCalendar', blocks, config),
+    ipcRenderer.invoke('control:syncToGoogleCalendar', blocks, config),
   exportToIcs: (blocks: ScheduleBlock[]): Promise<{ success: boolean; filePath?: string; error?: string }> =>
-    ipcRenderer.invoke('focus:exportToIcs', blocks),
+    ipcRenderer.invoke('control:exportToIcs', blocks),
   selectDirectory: (): Promise<{ canceled: boolean; filePaths: string[] }> =>
-    ipcRenderer.invoke('focus:selectDirectory'),
+    ipcRenderer.invoke('control:selectDirectory'),
   syncTasksToObsidian: (tasks: TaskItem[], modes: StudyMode[], config: ObsidianConfig): Promise<ObsidianSyncResult> =>
-    ipcRenderer.invoke('focus:syncToObsidian', tasks, modes, config),
+    ipcRenderer.invoke('control:syncToObsidian', tasks, modes, config),
   readTasksFromObsidian: (config: ObsidianConfig): Promise<TasksMdReadResult> =>
-    ipcRenderer.invoke('focus:tasksMdRead', config),
+    ipcRenderer.invoke('control:tasksMdRead', config),
   onTasksFileChanged: (callback: () => void) => {
     const handler = () => callback();
-    ipcRenderer.on('focus:tasksFileChanged', handler);
+    ipcRenderer.on('control:tasksFileChanged', handler);
     return () => {
-      ipcRenderer.removeListener('focus:tasksFileChanged', handler);
+      ipcRenderer.removeListener('control:tasksFileChanged', handler);
     };
   },
   openPath: (targetPath: string): Promise<{ success: boolean; error?: string }> =>
-    ipcRenderer.invoke('focus:openPath', targetPath),
+    ipcRenderer.invoke('control:openPath', targetPath),
   setLaunchAtLogin: (enabled: boolean): Promise<boolean> =>
-    ipcRenderer.invoke('focus:setLaunchAtLogin', enabled),
+    ipcRenderer.invoke('control:setLaunchAtLogin', enabled),
   openSelfControl: (blocklist: string[], minutes: number): Promise<{ success: boolean; error?: string }> =>
-    ipcRenderer.invoke('focus:openSelfControl', blocklist, minutes),
-  confirmQuit: (): Promise<void> => ipcRenderer.invoke('focus:confirmQuit'),
-  requestQuit: (): Promise<void> => ipcRenderer.invoke('focus:requestQuit'),
-  minimizeToTray: (): Promise<void> => ipcRenderer.invoke('focus:minimizeToTray'),
+    ipcRenderer.invoke('control:openSelfControl', blocklist, minutes),
+  confirmQuit: (): Promise<void> => ipcRenderer.invoke('control:confirmQuit'),
+  requestQuit: (): Promise<void> => ipcRenderer.invoke('control:requestQuit'),
+  minimizeToTray: (): Promise<void> => ipcRenderer.invoke('control:minimizeToTray'),
+  // ── Optional frontmost-app activity tracking (off by default) ──────────
+  setActivityTrackingEnabled: (enabled: boolean): Promise<{ success: boolean; running?: boolean; error?: string }> =>
+    ipcRenderer.invoke('control:activitySetEnabled', enabled),
+  onActivitySample: (callback: (sample: ActivitySample) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, sample: ActivitySample) => callback(sample);
+    ipcRenderer.on('control:activitySample', handler);
+    return () => {
+      ipcRenderer.removeListener('control:activitySample', handler);
+    };
+  },
+  // ── Distraction autopsy: apps terminated while blocking was active ─────
+  onDistractionBlocked: (callback: (event: DistractionEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, event: DistractionEvent) => callback(event);
+    ipcRenderer.on('control:distractionBlocked', handler);
+    return () => {
+      ipcRenderer.removeListener('control:distractionBlocked', handler);
+    };
+  },
+  // ── Quick notes (global shortcut + tray popup) ─────────────────────────
+  openQuickNote: (): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke('control:openQuickNote'),
+  saveQuickNote: (content: string): Promise<{ success: boolean; note?: Note; error?: string }> =>
+    ipcRenderer.invoke('control:saveQuickNote', content),
+  onNotesChanged: (callback: (notes: Note[]) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, notes: Note[]) => callback(notes);
+    ipcRenderer.on('control:notesChanged', handler);
+    return () => {
+      ipcRenderer.removeListener('control:notesChanged', handler);
+    };
+  },
+  syncNotesToObsidian: (notes: Note[], folders: NoteFolder[], config: ObsidianConfig): Promise<ObsidianSyncResult> =>
+    ipcRenderer.invoke('control:syncNotesToObsidian', notes, folders, config),
+  // ── LAN control rooms (no accounts, no cloud) ────────────────────────────
+  rooms: {
+    getStatus: (): Promise<RoomsStatus> => ipcRenderer.invoke('control:roomsGetStatus'),
+    hostStart: (room: string, name: string): Promise<{ success: boolean; port?: number; error?: string }> =>
+      ipcRenderer.invoke('control:roomsHostStart', room, name),
+    hostStop: (): Promise<{ success: boolean }> => ipcRenderer.invoke('control:roomsHostStop'),
+    publish: (state: RoomTimerState | null): Promise<{ success: boolean }> =>
+      ipcRenderer.invoke('control:roomsPublish', state),
+    join: (host: string, port: number, name: string): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('control:roomsJoin', host, port, name),
+    leave: (): Promise<{ success: boolean }> => ipcRenderer.invoke('control:roomsLeave'),
+    onEvent: (callback: (event: RoomsEvent) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, event: RoomsEvent) => callback(event);
+      ipcRenderer.on('control:roomsEvent', handler);
+      return () => {
+        ipcRenderer.removeListener('control:roomsEvent', handler);
+      };
+    },
+  },
   getPurposeSessionRequest: (): Promise<PurposeSessionRequest | null> =>
-    ipcRenderer.invoke('focus:getPurposeSessionRequest'),
+    ipcRenderer.invoke('control:getPurposeSessionRequest'),
   acknowledgePurposeSessionRequest: (id: string): Promise<boolean> =>
-    ipcRenderer.invoke('focus:acknowledgePurposeSessionRequest', id),
+    ipcRenderer.invoke('control:acknowledgePurposeSessionRequest', id),
   onPurposeSessionRequested: (callback: () => void) => {
     const handler = () => callback();
-    ipcRenderer.on('focus:purposeSessionRequested', handler);
+    ipcRenderer.on('control:purposeSessionRequested', handler);
     return () => {
-      ipcRenderer.removeListener('focus:purposeSessionRequested', handler);
+      ipcRenderer.removeListener('control:purposeSessionRequested', handler);
     };
   },
   onTriggerLeaveModal: (callback: () => void) => {
     const handler = () => callback();
-    ipcRenderer.on('focus:triggerLeaveModal', handler);
+    ipcRenderer.on('control:triggerLeaveModal', handler);
     return () => {
-      ipcRenderer.removeListener('focus:triggerLeaveModal', handler);
+      ipcRenderer.removeListener('control:triggerLeaveModal', handler);
     };
   },
   onTrayAction: (callback: (action: string) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, action: string) => callback(action);
-    ipcRenderer.on('focus:trayAction', handler);
+    ipcRenderer.on('control:trayAction', handler);
     return () => {
-      ipcRenderer.removeListener('focus:trayAction', handler);
+      ipcRenderer.removeListener('control:trayAction', handler);
     };
   },
   plannerMdStatus: (vaultPath: string): Promise<PlannerMdStatus> =>
-    ipcRenderer.invoke('focus:plannerMdStatus', vaultPath),
+    ipcRenderer.invoke('control:plannerMdStatus', vaultPath),
   plannerMdListTemplates: (vaultPath: string): Promise<PlannerTemplate[]> =>
-    ipcRenderer.invoke('focus:plannerMdListTemplates', vaultPath),
+    ipcRenderer.invoke('control:plannerMdListTemplates', vaultPath),
   plannerMdReadDay: (vaultPath: string, date: string): Promise<DayMarkdownPlan | null> =>
-    ipcRenderer.invoke('focus:plannerMdReadDay', vaultPath, date),
+    ipcRenderer.invoke('control:plannerMdReadDay', vaultPath, date),
   plannerMdApplyTemplate: (
     vaultPath: string,
     templateName: string,
     date: string,
     variables: Record<string, string>
   ): Promise<ApplyTemplateResult> =>
-    ipcRenderer.invoke('focus:plannerMdApplyTemplate', vaultPath, templateName, date, variables),
+    ipcRenderer.invoke('control:plannerMdApplyTemplate', vaultPath, templateName, date, variables),
   plannerMdCreateTemplate: (
     vaultPath: string,
     name: string,
     content: string
   ): Promise<PlannerMdOpResult & { template?: PlannerTemplate }> =>
-    ipcRenderer.invoke('focus:plannerMdCreateTemplate', vaultPath, name, content),
+    ipcRenderer.invoke('control:plannerMdCreateTemplate', vaultPath, name, content),
   plannerMdSaveDayAsTemplate: (
     vaultPath: string,
     date: string,
     name: string
   ): Promise<PlannerMdOpResult & { template?: PlannerTemplate }> =>
-    ipcRenderer.invoke('focus:plannerMdSaveDayAsTemplate', vaultPath, date, name),
+    ipcRenderer.invoke('control:plannerMdSaveDayAsTemplate', vaultPath, date, name),
   plannerMdDuplicateTemplate: (
     vaultPath: string,
     name: string,
     newName: string
   ): Promise<PlannerMdOpResult & { template?: PlannerTemplate }> =>
-    ipcRenderer.invoke('focus:plannerMdDuplicateTemplate', vaultPath, name, newName),
+    ipcRenderer.invoke('control:plannerMdDuplicateTemplate', vaultPath, name, newName),
   plannerMdDeleteTemplate: (vaultPath: string, name: string): Promise<PlannerMdOpResult> =>
-    ipcRenderer.invoke('focus:plannerMdDeleteTemplate', vaultPath, name),
+    ipcRenderer.invoke('control:plannerMdDeleteTemplate', vaultPath, name),
   plannerMdWriteTemplate: (
     vaultPath: string,
     name: string,
     content: string
   ): Promise<PlannerMdOpResult & { template?: PlannerTemplate }> =>
-    ipcRenderer.invoke('focus:plannerMdWriteTemplate', vaultPath, name, content),
+    ipcRenderer.invoke('control:plannerMdWriteTemplate', vaultPath, name, content),
   plannerMdToggleTask: (
     vaultPath: string,
     date: string,
     taskIndex: number,
     completed: boolean
   ): Promise<PlannerMdTaskOpResult> =>
-    ipcRenderer.invoke('focus:plannerMdToggleTask', vaultPath, date, taskIndex, completed),
+    ipcRenderer.invoke('control:plannerMdToggleTask', vaultPath, date, taskIndex, completed),
   plannerMdUpdateTaskTitle: (
     vaultPath: string,
     date: string,
     taskIndex: number,
     title: string
   ): Promise<PlannerMdTaskOpResult> =>
-    ipcRenderer.invoke('focus:plannerMdUpdateTaskTitle', vaultPath, date, taskIndex, title),
+    ipcRenderer.invoke('control:plannerMdUpdateTaskTitle', vaultPath, date, taskIndex, title),
   plannerMdOpenFile: (filePath: string): Promise<PlannerMdOpResult> =>
-    ipcRenderer.invoke('focus:plannerMdOpenFile', filePath),
+    ipcRenderer.invoke('control:plannerMdOpenFile', filePath),
   plannerMdReadTemplate: (
     vaultPath: string,
     templateName: string
   ): Promise<PlannerMdOpResult & { content?: string }> =>
-    ipcRenderer.invoke('focus:plannerMdReadTemplate', vaultPath, templateName),
+    ipcRenderer.invoke('control:plannerMdReadTemplate', vaultPath, templateName),
   plannerMdUpdateDaySchedule: (
     vaultPath: string,
     date: string,
     sectionBody: string
   ): Promise<PlannerMdOpResult & { path?: string }> =>
-    ipcRenderer.invoke('focus:plannerMdUpdateDaySchedule', vaultPath, date, sectionBody),
+    ipcRenderer.invoke('control:plannerMdUpdateDaySchedule', vaultPath, date, sectionBody),
   onPlannerFileChanged: (callback: (payload: PlannerFileChangeEvent) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: PlannerFileChangeEvent) =>
       callback(payload);
-    ipcRenderer.on('focus:plannerFileChanged', handler);
+    ipcRenderer.on('control:plannerFileChanged', handler);
     return () => {
-      ipcRenderer.removeListener('focus:plannerFileChanged', handler);
+      ipcRenderer.removeListener('control:plannerFileChanged', handler);
     };
   },
   // ── Automatic study-day execution (main scheduler → renderer session) ──
   autoExecGetStatus: (date?: string): Promise<AutoExecStatus> =>
-    ipcRenderer.invoke('focus:autoExec:getStatus', date),
+    ipcRenderer.invoke('control:autoExec:getStatus', date),
   autoExecNotifyStatus: (): Promise<{ supported: boolean }> =>
-    ipcRenderer.invoke('focus:autoExec:notifyStatus'),
+    ipcRenderer.invoke('control:autoExec:notifyStatus'),
   onAutoExecStart: (
     callback: (req: AutoExecStartRequest) => Promise<AutoExecStartResult>
   ) => {
     const handler = (_event: Electron.IpcRendererEvent, req: AutoExecStartRequest) => {
       Promise.resolve(callback(req))
-        .then((result) => ipcRenderer.invoke('focus:autoExec:startResult', result, req.requestId))
+        .then((result) => ipcRenderer.invoke('control:autoExec:startResult', result, req.requestId))
         .catch((err: unknown) =>
-          ipcRenderer.invoke('focus:autoExec:startResult', {
+          ipcRenderer.invoke('control:autoExec:startResult', {
             success: false,
             error: err instanceof Error ? err.message : String(err),
           }, req.requestId)
         );
     };
-    ipcRenderer.on('focus:autoExec:start', handler);
+    ipcRenderer.on('control:autoExec:start', handler);
     return () => {
-      ipcRenderer.removeListener('focus:autoExec:start', handler);
+      ipcRenderer.removeListener('control:autoExec:start', handler);
     };
   },
   onAutoExecEnd: (
@@ -186,53 +237,53 @@ contextBridge.exposeInMainWorld('focusAPI', {
   ) => {
     const handler = (_event: Electron.IpcRendererEvent, req: AutoExecEndRequest) => {
       Promise.resolve(callback(req))
-        .then((result) => ipcRenderer.invoke('focus:autoExec:endResult', result, req.requestId))
+        .then((result) => ipcRenderer.invoke('control:autoExec:endResult', result, req.requestId))
         .catch((err: unknown) =>
-          ipcRenderer.invoke('focus:autoExec:endResult', {
+          ipcRenderer.invoke('control:autoExec:endResult', {
             success: false,
             error: err instanceof Error ? err.message : String(err),
           }, req.requestId)
         );
     };
-    ipcRenderer.on('focus:autoExec:end', handler);
+    ipcRenderer.on('control:autoExec:end', handler);
     return () => {
-      ipcRenderer.removeListener('focus:autoExec:end', handler);
+      ipcRenderer.removeListener('control:autoExec:end', handler);
     };
   },
   // ── Google Calendar two-way sync (tokens never reach the renderer) ───────
   googleCalendar: {
-    getStatus: (): Promise<GoogleSyncStatus> => ipcRenderer.invoke('focus:google:getStatus'),
+    getStatus: (): Promise<GoogleSyncStatus> => ipcRenderer.invoke('control:google:getStatus'),
     getClientState: (): Promise<{ configured: boolean; source?: string; hasSecret?: boolean }> =>
-      ipcRenderer.invoke('focus:google:getClientState'),
+      ipcRenderer.invoke('control:google:getClientState'),
     setClientId: (clientId: string, clientSecret?: string): Promise<{ success: boolean; error?: string }> =>
-      ipcRenderer.invoke('focus:google:setClientId', clientId, clientSecret),
+      ipcRenderer.invoke('control:google:setClientId', clientId, clientSecret),
     clearClientId: (): Promise<{ success: boolean; error?: string; removed?: boolean }> =>
-      ipcRenderer.invoke('focus:google:clearClientId'),
-    connect: (): Promise<GoogleConnectResult> => ipcRenderer.invoke('focus:google:connect'),
+      ipcRenderer.invoke('control:google:clearClientId'),
+    connect: (): Promise<GoogleConnectResult> => ipcRenderer.invoke('control:google:connect'),
     disconnect: (options?: { removeSyncedEvents?: boolean }): Promise<GoogleDisconnectResult> =>
-      ipcRenderer.invoke('focus:google:disconnect', options),
+      ipcRenderer.invoke('control:google:disconnect', options),
     listCalendars: (): Promise<GoogleListCalendarsResult> =>
-      ipcRenderer.invoke('focus:google:listCalendars'),
+      ipcRenderer.invoke('control:google:listCalendars'),
     selectCalendar: (calendarId: string): Promise<{ success: boolean; error?: string }> =>
-      ipcRenderer.invoke('focus:google:selectCalendar', calendarId),
+      ipcRenderer.invoke('control:google:selectCalendar', calendarId),
     syncNow: (options?: { full?: boolean }): Promise<GoogleSyncNowResult> =>
-      ipcRenderer.invoke('focus:google:syncNow', options),
+      ipcRenderer.invoke('control:google:syncNow', options),
     applyChanges: (result: GoogleApplyResult, requestId: string): Promise<void> =>
-      ipcRenderer.invoke('focus:google:applyChanges', result, requestId).then(() => undefined),
+      ipcRenderer.invoke('control:google:applyChanges', result, requestId).then(() => undefined),
     notifyOnline: (): Promise<void> =>
-      ipcRenderer.invoke('focus:google:notifyOnline').then(() => undefined),
+      ipcRenderer.invoke('control:google:notifyOnline').then(() => undefined),
     getDiagnostics: (): Promise<{
       generatedAt: string;
       client: { configured: boolean; source?: string; hasSecret?: boolean };
       status: GoogleSyncStatus;
       log: string;
-    }> => ipcRenderer.invoke('focus:google:getDiagnostics'),
+    }> => ipcRenderer.invoke('control:google:getDiagnostics'),
     onStatus: (callback: (status: GoogleSyncStatus) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, status: GoogleSyncStatus) =>
         callback(status);
-      ipcRenderer.on('focus:google:status', handler);
+      ipcRenderer.on('control:google:status', handler);
       return () => {
-        ipcRenderer.removeListener('focus:google:status', handler);
+        ipcRenderer.removeListener('control:google:status', handler);
       };
     },
     onApplyChanges: (
@@ -240,17 +291,17 @@ contextBridge.exposeInMainWorld('focusAPI', {
     ) => {
       const handler = (_event: Electron.IpcRendererEvent, mutations: GoogleApplyMutations) => {
         Promise.resolve(callback(mutations))
-          .then((result) => ipcRenderer.invoke('focus:google:applyChanges', result, mutations.requestId))
+          .then((result) => ipcRenderer.invoke('control:google:applyChanges', result, mutations.requestId))
           .catch((err: unknown) =>
-            ipcRenderer.invoke('focus:google:applyChanges', {
+            ipcRenderer.invoke('control:google:applyChanges', {
               success: false,
               error: err instanceof Error ? err.message : String(err),
             }, mutations.requestId)
           );
       };
-      ipcRenderer.on('focus:google:apply', handler);
+      ipcRenderer.on('control:google:apply', handler);
       return () => {
-        ipcRenderer.removeListener('focus:google:apply', handler);
+        ipcRenderer.removeListener('control:google:apply', handler);
       };
     },
   },

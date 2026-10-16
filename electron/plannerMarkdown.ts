@@ -22,22 +22,43 @@ const DURATION_LINE_RE = /^\s{2,}[-*]\s+(?:\*\*)?Duration(?:\*\*)?\s*:\s*(\d+)\s
 const HEADING_RE = /^(#{1,6})\s+(.*)$/;
 const VARIABLE_RE = /\{\{\s*([\w-]+)\s*\}\}/g;
 
+import * as crypto from 'crypto';
+
 interface PlannerDirs {
   root: string;
   days: string;
   templates: string;
 }
 
+function atomicWriteFile(filePath: string, content: string): void {
+  const tmp = `${filePath}.tmp.${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
+  fs.writeFileSync(tmp, content, 'utf-8');
+  fs.renameSync(tmp, filePath);
+}
+
 export function getPlannerDirs(vaultPath: string): PlannerDirs {
-  const root = path.join(vaultPath.trim(), PLANNER_ROOT_NAME);
+  const trimmed = (vaultPath || '').trim();
+  const root = trimmed ? path.join(trimmed, PLANNER_ROOT_NAME) : '';
   return {
     root,
-    days: path.join(root, DAYS_DIR_NAME),
-    templates: path.join(root, TEMPLATES_DIR_NAME),
+    days: trimmed ? path.join(root, DAYS_DIR_NAME) : '',
+    templates: trimmed ? path.join(root, TEMPLATES_DIR_NAME) : '',
   };
 }
 
+export function isValidDayDate(date: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(date);
+}
+
+function dayFilePath(dirs: PlannerDirs, date: string): string | null {
+  if (!dirs.days || !isValidDayDate(date)) return null;
+  const resolved = path.resolve(dirs.days, `${date}.md`);
+  if (resolved !== path.normalize(resolved) || !resolved.startsWith(path.resolve(dirs.days) + path.sep)) return null;
+  return resolved;
+}
+
 function ensureDirs(dirs: PlannerDirs) {
+  if (!dirs.root || !dirs.days || !dirs.templates) return;
   for (const dir of [dirs.root, dirs.days, dirs.templates]) {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
@@ -262,7 +283,9 @@ function generateDayContent(
 
   // Reset every checkbox to unchecked — a fresh day starts unstarted
   const resetLines = lines.map((line) =>
-    CHECKBOX_LINE_RE.test(line) ? line.replace(CHECKBOX_LINE_RE, (_m, prefix) => `${prefix}[ ]`) : line
+    CHECKBOX_LINE_RE.test(line)
+      ? line.replace(CHECKBOX_LINE_RE, (_m, prefix, _mark, title) => `${prefix}[ ]${title ? ` ${title}` : ''}`)
+      : line
   );
 
   // Replace the first H1 with the date heading (or prepend one)
@@ -376,8 +399,10 @@ export class PlannerMarkdownManager {
 
   readDay(vaultPath: string, date: string): DayMarkdownPlan {
     const dirs = getPlannerDirs(vaultPath);
+    if (!dirs.days) return emptyDayPlan(date, dirs);
+    const filePath = dayFilePath(dirs, date);
+    if (!filePath) return emptyDayPlan(date, dirs);
     ensureDirs(dirs);
-    const filePath = path.join(dirs.days, `${date}.md`);
     if (!fs.existsSync(filePath)) {
       return emptyDayPlan(date, dirs);
     }
@@ -427,10 +452,12 @@ export class PlannerMarkdownManager {
     }
     try {
       const dirs = getPlannerDirs(vaultPath);
+      if (!dirs.days) return { success: false, error: 'No Obsidian vault selected.' };
+      const filePath = dayFilePath(dirs, date);
+      if (!filePath) return { success: false, error: `Invalid date "${date}" (expected YYYY-MM-DD).` };
       ensureDirs(dirs);
-      const filePath = path.join(dirs.days, `${date}.md`);
       const existing = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf-8') : '';
-      fs.writeFileSync(filePath, mergeDayScheduleSection(existing, date, sectionBody), 'utf-8');
+      atomicWriteFile(filePath, mergeDayScheduleSection(existing, date, sectionBody));
       return { success: true, path: filePath };
     } catch (err) {
       return {
@@ -447,6 +474,9 @@ export class PlannerMarkdownManager {
     variables: Record<string, string>
   ): ApplyTemplateResult {
     const dirs = getPlannerDirs(vaultPath);
+    if (!dirs.days) return { success: false, error: 'No Obsidian vault selected.' };
+    const dayPath = dayFilePath(dirs, date);
+    if (!dayPath) return { success: false, error: `Invalid date "${date}" (expected YYYY-MM-DD).` };
     ensureDirs(dirs);
     const safeName = sanitizeFilename(templateName);
     const templatePath = path.join(dirs.templates, `${safeName}.md`);
@@ -455,9 +485,8 @@ export class PlannerMarkdownManager {
     }
     const templateRaw = fs.readFileSync(templatePath, 'utf-8');
     const content = generateDayContent(templateRaw, safeName, date, variables);
-    const dayPath = path.join(dirs.days, `${date}.md`);
     const replaced = fs.existsSync(dayPath);
-    fs.writeFileSync(dayPath, content, 'utf-8');
+    atomicWriteFile(dayPath, content);
     const plan = parseDayMarkdown(date, content, dayPath);
     return { success: true, plan, replaced };
   }
@@ -489,7 +518,7 @@ export class PlannerMarkdownManager {
             '  - Duration: 25m',
             '',
           ].join('\n');
-    fs.writeFileSync(filePath, raw, 'utf-8');
+    atomicWriteFile(filePath, raw);
     return { success: true, template: templateToPlannerTemplate(safeName, filePath, raw) };
   }
 
@@ -512,7 +541,7 @@ export class PlannerMarkdownManager {
     }
     try {
       const filePath = path.join(dirs.templates, `${safeName}.md`);
-      fs.writeFileSync(filePath, content.replace(/\s+$/, '') + '\n', 'utf-8');
+      atomicWriteFile(filePath, content.replace(/\s+$/, '') + '\n');
       return { success: true, template: templateToPlannerTemplate(safeName, filePath, content) };
     } catch (err) {
       return {
@@ -531,7 +560,8 @@ export class PlannerMarkdownManager {
     ensureDirs(dirs);
     const safeName = sanitizeFilename(name).slice(0, 80);
     if (!safeName) return { success: false, error: 'Template name is required.' };
-    const dayPath = path.join(dirs.days, `${date}.md`);
+    const dayPath = dayFilePath(dirs, date);
+    if (!dayPath) return { success: false, error: `Invalid date "${date}" (expected YYYY-MM-DD).` };
     if (!fs.existsSync(dayPath)) {
       return { success: false, error: `No day plan found for ${date}.` };
     }
@@ -541,7 +571,11 @@ export class PlannerMarkdownManager {
     // Convert the day into a reusable template: reset checkboxes, keep structure
     const resetBody = body
       .split('\n')
-      .map((line) => (CHECKBOX_LINE_RE.test(line) ? line.replace(CHECKBOX_LINE_RE, (_m, prefix) => `${prefix}[ ]`) : line))
+      .map((line) =>
+        CHECKBOX_LINE_RE.test(line)
+          ? line.replace(CHECKBOX_LINE_RE, (_m, prefix, _mark, title) => `${prefix}[ ]${title ? ` ${title}` : ''}`)
+          : line
+      )
       .join('\n');
 
     const templateRaw =
@@ -551,7 +585,7 @@ export class PlannerMarkdownManager {
       '\n';
 
     const filePath = path.join(dirs.templates, `${safeName}.md`);
-    fs.writeFileSync(filePath, templateRaw, 'utf-8');
+    atomicWriteFile(filePath, templateRaw);
     return { success: true, template: templateToPlannerTemplate(safeName, filePath, templateRaw) };
   }
 
@@ -577,7 +611,7 @@ export class PlannerMarkdownManager {
     const { data, body } = parseFrontmatter(raw);
     data.name = safeNewName;
     raw = buildFrontmatter(data) + '\n\n' + body.trim() + '\n';
-    fs.writeFileSync(destPath, raw, 'utf-8');
+    atomicWriteFile(destPath, raw);
     return { success: true, template: templateToPlannerTemplate(safeNewName, destPath, raw) };
   }
 
@@ -599,8 +633,8 @@ export class PlannerMarkdownManager {
     completed: boolean
   ): PlannerMdTaskOpResult {
     const dirs = getPlannerDirs(vaultPath);
-    const filePath = path.join(dirs.days, `${date}.md`);
-    if (!fs.existsSync(filePath)) {
+    const filePath = dayFilePath(dirs, date);
+    if (!filePath || !fs.existsSync(filePath)) {
       return { success: false, error: `No day plan found for ${date}.` };
     }
     const raw = fs.readFileSync(filePath, 'utf-8');
@@ -609,7 +643,7 @@ export class PlannerMarkdownManager {
       return `${prefix}[${completed ? 'x' : ' '}] ${match[3]}`;
     });
     if (result.error) return { success: false, error: result.error };
-    fs.writeFileSync(filePath, result.raw, 'utf-8');
+    atomicWriteFile(filePath, result.raw);
     return { success: true, plan: parseDayMarkdown(date, result.raw, filePath) };
   }
 
@@ -620,8 +654,8 @@ export class PlannerMarkdownManager {
     title: string
   ): PlannerMdTaskOpResult {
     const dirs = getPlannerDirs(vaultPath);
-    const filePath = path.join(dirs.days, `${date}.md`);
-    if (!fs.existsSync(filePath)) {
+    const filePath = dayFilePath(dirs, date);
+    if (!filePath || !fs.existsSync(filePath)) {
       return { success: false, error: `No day plan found for ${date}.` };
     }
     const cleanTitle = title.replace(/\r?\n/g, ' ').trim();
@@ -633,7 +667,7 @@ export class PlannerMarkdownManager {
       return `${prefix}[${mark}] ${cleanTitle}`;
     });
     if (result.error) return { success: false, error: result.error };
-    fs.writeFileSync(filePath, result.raw, 'utf-8');
+    atomicWriteFile(filePath, result.raw);
     return { success: true, plan: parseDayMarkdown(date, result.raw, filePath) };
   }
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { applyMutationsToData, countMutationTargets } from '../src/services/googleSync';
 import {
   DayPlan,
-  FocusAppData,
+  ControlAppData,
   GoogleApplyMutations,
   ScheduleBlock,
   UserSettings,
@@ -36,7 +36,7 @@ function makePlan(date: string, blocks: ScheduleBlock[]): DayPlan {
   };
 }
 
-function makeData(plans: Record<string, DayPlan>): FocusAppData {
+function makeData(plans: Record<string, DayPlan>): ControlAppData {
   return {
     modes: [],
     sessions: [],
@@ -53,7 +53,7 @@ function makeData(plans: Record<string, DayPlan>): FocusAppData {
       blockingEnabled: false,
       blockingStrategy: 'none',
       googleCalendar: { connected: false, calendarId: 'primary' },
-      minimalModeOnFocus: false,
+      minimalModeOnControl: false,
     } as UserSettings,
     plans,
   };

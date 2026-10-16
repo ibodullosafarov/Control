@@ -1,4 +1,4 @@
-import { StudyMode, UserSettings, FocusAppData, TaskItem } from '../types';
+import { StudyMode, UserSettings, ControlAppData, TaskItem } from '../types';
 
 export const DEFAULT_BLOCKLIST = [
   'youtube.com',
@@ -36,7 +36,7 @@ export const INITIAL_MODES: StudyMode[] = [
   {
     id: 'mode-deep-work',
     name: 'Deep Work',
-    description: 'Long, uninterrupted focus sessions for complex deep problem solving',
+    description: 'Long, uninterrupted control sessions for complex deep problem solving',
     icon: 'Brain',
     color: '#38bdf8', // Sky
     workDuration: 52,
@@ -58,7 +58,7 @@ export const INITIAL_MODES: StudyMode[] = [
   {
     id: 'mode-study',
     name: 'Study',
-    description: 'Academic and curriculum focus with structured work/rest intervals',
+    description: 'Academic and curriculum control with structured work/rest intervals',
     icon: 'BookOpen',
     color: '#10b981', // Emerald
     workDuration: 45,
@@ -80,7 +80,7 @@ export const INITIAL_MODES: StudyMode[] = [
   {
     id: 'mode-custom',
     name: 'Custom',
-    description: 'Quick flexible focus session tailored with manual parameters',
+    description: 'Quick flexible control session tailored with manual parameters',
     icon: 'Target',
     color: '#8b5cf6', // Violet
     workDuration: 30,
@@ -181,6 +181,7 @@ export const INITIAL_SETTINGS: UserSettings = {
   defaultModeId: 'mode-deep-work',
   blockingEnabled: true,
   blockingStrategy: 'dynamic_hosts',
+  dailyGoalMinutes: 120,
   googleCalendar: {
     connected: false,
     calendarId: 'primary',
@@ -195,13 +196,16 @@ export const INITIAL_SETTINGS: UserSettings = {
     autoSync: true,
     includeCompleted: true,
   },
-  minimalModeOnFocus: true,
+  minimalModeOnControl: true,
   reducedMotion: false,
   dyslexicFont: false,
 };
 
-export const INITIAL_APP_DATA: FocusAppData = {
+export const INITIAL_APP_DATA: ControlAppData = {
   modes: INITIAL_MODES,
+  modeFolders: [],
+  notes: [],
+  noteFolders: [],
   sessions: [],
   tasks: INITIAL_TASKS,
   activeSession: null,

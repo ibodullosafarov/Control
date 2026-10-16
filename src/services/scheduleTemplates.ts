@@ -30,8 +30,8 @@ export interface TemplateSession {
   durationMinutes: number | null;
   /** Null = not specified (sessions default true, breaks default false). */
   timer: boolean | null;
-  /** Null = not specified (follow the mode's Focus rules). */
-  focusMode: boolean | null;
+  /** Null = not specified (follow the mode's Control rules). */
+  controlMode: boolean | null;
   /** Mode name as written in the template, if any. */
   modeName: string | null;
   /** e.g. 50 with label 'questions'. */
@@ -72,7 +72,7 @@ export interface SessionOverride {
   durationMinutes?: number;
   countValue?: number | null;
   timer?: boolean;
-  focusMode?: boolean | null;
+  controlMode?: boolean | null;
   modeId?: string;
 }
 
@@ -100,6 +100,8 @@ export interface GenerationResult {
   endTime: string | null;
   /** True when the date already holds blocks generated from this template. */
   alreadyApplied: boolean;
+  /** Non-fatal notices: silent mode fallbacks, preserved keys, density. */
+  warnings: string[];
 }
 
 // ── Small parsers ────────────────────────────────────────────────────────────
@@ -109,7 +111,7 @@ const CHECKBOX_RE = /^\s*[-*]\s+\[[ xX]\]\s*(.*)$/;
 const BULLET_RE = /^\s*[-*]\s+(.*)$/;
 const SESSION_HEADING_RE = /^##\s+(.*)$/;
 const ANY_HEADING_RE = /^(#{1,6})\s+(.*)$/;
-const TIME_RE = /^([01]?\d|2[0-3]):([0-5]\d)$/;
+const TIME_RE = /^([01]?\d|2[0-4]):([0-5]\d)$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export function parseDurationMinutes(raw: string): number | null {
@@ -143,12 +145,20 @@ export function parseBool(raw: string): boolean | null {
 export function parseTimeMinutes(time: string): number | null {
   const m = time.trim().match(TIME_RE);
   if (!m) return null;
-  return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+  const h = parseInt(m[1], 10);
+  const min = parseInt(m[2], 10);
+  if (h === 24 && min !== 0) return null;
+  if (h < 0 || h > 24) return null;
+  return h * 60 + min;
 }
 
 export function formatMinutes(minutes: number): string {
-  const h = Math.floor(minutes / 60) % 24;
-  const m = minutes % 60;
+  // Single midnight convention: clamp to [0, 1440]; 1440 renders as "24:00"
+  // (never wraps to "00:00", which corrupts overlap checks and grid order).
+  const clamped = Math.max(0, Math.min(24 * 60, Math.floor(minutes)));
+  if (clamped === 24 * 60) return '24:00';
+  const h = Math.floor(clamped / 60);
+  const m = clamped % 60;
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
@@ -227,6 +237,28 @@ function stripBold(key: string): string {
 
 function isBreakHeading(title: string): boolean {
   return /^(break|rest|pause|breather|coffee|lunch)$/i.test(title.trim());
+}
+
+const BREAK_WORD = '(break|rest|pause|breather|coffee|lunch)';
+
+/**
+ * Lenient break-title test for absolute-time (flex) templates, where the
+ * `#` heading is free-form event text, not a `##`-section keyword.
+ * Matches exact titles ("Break"), prefixed ("Break: wind down",
+ * "Rest — 10 min") and suffixed ("Long Break", "Lunch Break") forms.
+ * Deliberately does NOT match a leading verb ("Break down 50 problems"),
+ * which is a control task, not rest.
+ */
+export function isBreakTitle(title: string): boolean {
+  const t = title.trim();
+  if (!t) return false;
+  if (new RegExp(`^${BREAK_WORD}$`, 'i').test(t)) return true;
+  // Prefixed only with an explicit separator ("Break: wind down",
+  // "Rest — 10 min") — a plain space may be a leading verb
+  // ("Break down 50 problems"), which is a control task, not rest.
+  if (new RegExp(`^${BREAK_WORD}\\s*[-–—:|•]`, 'i').test(t)) return true;
+  if (new RegExp(`[\\s\\-–—:|•]+${BREAK_WORD}$`, 'i').test(t)) return true;
+  return false;
 }
 
 /**
@@ -315,7 +347,7 @@ export function parseScheduleTemplate(
       kind: 'session',
       durationMinutes: null,
       timer: null,
-      focusMode: null,
+      controlMode: null,
       modeName: null,
       countValue: null,
       countLabel: null,
@@ -359,14 +391,15 @@ export function parseScheduleTemplate(
         } else {
           session.timer = b;
         }
-      } else if (key === 'focus mode' || key === 'focus') {
+      } else if (key === 'control mode' || key === 'control' || key === 'focus mode' || key === 'focus') {
+        // Legacy 'focus mode' / 'focus' keys from pre-rename templates still parse.
         const b = parseBool(value);
         if (b === null) {
           errors.push(
-            err(name, section.title, 'Focus Mode', `Invalid Focus Mode "${value}" (expected true/false).`)
+            err(name, section.title, 'Control Mode', `Invalid Control Mode "${value}" (expected true/false).`)
           );
         } else {
-          session.focusMode = b;
+          session.controlMode = b;
         }
       } else if (key === 'type') {
         const t = value.toLowerCase();
@@ -448,24 +481,33 @@ function resolveMode(
   modeId: string | undefined,
   modeName: string | null,
   forBreak: boolean
-): StudyMode | null {
+): { mode: StudyMode | null; fallbackWarning: string | null } {
   if (modeId) {
     const byId = modes.find((m) => m.id === modeId);
-    if (byId) return byId;
+    if (byId) return { mode: byId, fallbackWarning: null };
+    return { mode: modes.find((m) => m.isDefault) || modes[0] || null, fallbackWarning: `Mode id "${modeId}" not found — fell back to default. Pick a replacement.` };
   }
   if (modeName) {
     const byName = modes.find((m) => m.name.toLowerCase() === modeName.toLowerCase());
-    if (byName) return byName;
+    if (byName) return { mode: byName, fallbackWarning: null };
+    return { mode: modes.find((m) => m.isDefault) || modes[0] || null, fallbackWarning: `Mode "${modeName}" not found — fell back to default. Pick a replacement.` };
   }
   if (forBreak) {
     const rest = modes.find((m) => /^(break|rest)$/i.test(m.name));
-    if (rest) return rest;
+    if (rest) return { mode: rest, fallbackWarning: null };
   }
-  return modes.find((m) => m.isDefault) || modes[0] || null;
+  return { mode: modes.find((m) => m.isDefault) || modes[0] || null, fallbackWarning: null };
 }
 
 function overlaps(aStart: string, aEnd: string, bStart: string, bEnd: string): boolean {
-  return aStart < bEnd && bStart < aEnd;
+  const aS = parseTimeMinutes(aStart);
+  const aE = parseTimeMinutes(aEnd);
+  const bS = parseTimeMinutes(bStart);
+  const bE = parseTimeMinutes(bEnd);
+  if (aS == null || aE == null || bS == null || bE == null) {
+    return aStart < bEnd && bStart < aEnd;
+  }
+  return aS < bE && bS < aE;
 }
 
 function makeBlockId(nowMs: number, salt: string): string {
@@ -497,6 +539,7 @@ export function generateSchedule(
     totalMinutes: 0,
     endTime: null,
     alreadyApplied: false,
+    warnings: [],
     ...partial,
   });
 
@@ -511,7 +554,7 @@ export function generateSchedule(
     return fail([`Template "${template.name}" defines no sessions.`]);
   }
   if (!ctx.modes || ctx.modes.length === 0) {
-    return fail(['No focus modes are defined — create one before generating a schedule.']);
+    return fail(['No control modes are defined — create one before generating a schedule.']);
   }
 
   const variables = config.variables || {};
@@ -521,6 +564,13 @@ export function generateSchedule(
   const appliedAt = new Date(nowMs).toISOString();
 
   const blocks: ScheduleBlock[] = [];
+  const allWarnings: string[] = [];
+  // Surface preserved unknown keys instead of silently carrying them.
+  for (const s of template.sessions) {
+    for (const n of s.notes) {
+      if (/^preserved:/i.test(n.trim())) allWarnings.push(`Preserved custom field in "${s.title}": ${n}`);
+    }
+  }
   let cursor = startMinutes;
   let totalMinutes = 0;
 
@@ -543,10 +593,12 @@ export function generateSchedule(
         `"${title}" would end after midnight — shorten a duration or pick an earlier start time.`,
       ]);
     }
-    const mode = resolveMode(ctx.modes, ov.modeId, session.modeName ? applyTemplateVariables(session.modeName, variables) : null, session.kind === 'break');
+    const resolved = resolveMode(ctx.modes, ov.modeId, session.modeName ? applyTemplateVariables(session.modeName, variables) : null, session.kind === 'break');
+    const mode = resolved.mode;
     if (!mode) {
-      return fail([`No focus mode available for "${title}".`]);
+      return fail([`No control mode available for "${title}".`], { warnings: allWarnings });
     }
+    if (resolved.fallbackWarning) allWarnings.push(`"${title}": ${resolved.fallbackWarning}`);
 
     const countValue = ov.countValue !== undefined ? ov.countValue : session.countValue;
     const countLabel = session.countLabel || 'items';
@@ -560,6 +612,20 @@ export function generateSchedule(
     // modeName is the visible event title (same convention as manually
     // created blocks); the resolved mode travels in modeId/modeIcon/modeColor
     // for timer start, and counts/notes travel in description.
+    // B-09: breaks are rest, not control — zero work, timer off, so enabling
+    // the timer can never run a break as a control block.
+    const isBreak = session.kind === 'break';
+    // S-01: density warning — questions never drive time, so flag dense plans.
+    if (!isBreak && countValue != null) {
+      const perMin = (countValue as number) / durationMinutes;
+      const lbl = (countLabel || 'items').toLowerCase();
+      const limit = lbl.includes('question') || lbl.includes('problem') ? 2
+        : lbl.includes('word') || lbl.includes('card') ? 6
+        : lbl.includes('page') ? 0.5 : 4;
+      if (perMin > limit) {
+        allWarnings.push(`"${title}": ${countValue} ${countLabel} in ${durationMinutes}m (~${perMin.toFixed(1)}/min) looks too dense.`);
+      }
+    }
     blocks.push({
       id: makeBlockId(nowMs, salt()),
       date: config.date,
@@ -569,14 +635,14 @@ export function generateSchedule(
       modeName: title,
       modeIcon: mode.icon,
       modeColor: mode.color,
-      workDuration: durationMinutes,
-      breakDuration: 0,
+      workDuration: isBreak ? 0 : durationMinutes,
+      breakDuration: isBreak ? durationMinutes : 0,
       cycles: 1,
       status: 'approved',
       ...(detailParts.length > 0 ? { description: detailParts.join(' · ') } : {}),
-      timerEnabled: ov.timer ?? session.timer ?? (session.kind === 'break' ? false : true),
-      ...(ov.focusMode !== undefined || session.focusMode !== null
-        ? { focusMode: ov.focusMode ?? (session.focusMode as boolean) }
+      timerEnabled: ov.timer ?? session.timer ?? (isBreak ? false : true),
+      ...(ov.controlMode !== undefined || session.controlMode !== null
+        ? { controlMode: ov.controlMode ?? (session.controlMode as boolean) }
         : {}),
       originTemplate: template.name,
       originTemplateAppliedAt: appliedAt,
@@ -611,6 +677,7 @@ export function generateSchedule(
     totalMinutes,
     endTime: blocks.length > 0 ? blocks[blocks.length - 1].endTime : null,
     alreadyApplied: existing.some((b) => b.originTemplate === template.name),
+    warnings: allWarnings,
   };
 }
 
@@ -688,8 +755,8 @@ export interface DurationMismatch {
   title: string;
   /** Scheduled event length in minutes. */
   eventMinutes: number;
-  /** The mode's configured focus length in minutes. */
-  focusMinutes: number;
+  /** The mode's configured control length in minutes. */
+  controlMinutes: number;
   modeName: string;
   modeId: string;
 }
@@ -702,10 +769,10 @@ function eventMinutesOf(startTime: string, endTime: string): number | null {
 }
 
 /**
- * Check scheduled events against their modes' focus durations.
+ * Check scheduled events against their modes' control durations.
  *
  * Only applies to single-block modes (cycles <= 1, non-chill): for those, the
- * calendar event IS the focus block, so its length should equal the mode's
+ * calendar event IS the control block, so its length should equal the mode's
  * `workDuration`. Multi-cycle modes are deliberately exempt — their events
  * intentionally span several work/break cycles.
  *
@@ -727,7 +794,7 @@ export function validateSingleBlockDurations(
         index,
         title: b.modeName,
         eventMinutes,
-        focusMinutes: mode.workDuration,
+        controlMinutes: mode.workDuration,
         modeName: mode.name,
         modeId: mode.id,
       });

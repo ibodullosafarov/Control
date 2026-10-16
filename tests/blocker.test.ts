@@ -30,8 +30,8 @@ describe('buildManagedSection', () => {
 
   it('is wrapped in markers with a do-not-edit notice', () => {
     const lines = buildManagedSection(['a.com']).split('\n');
-    expect(lines[0]).toMatch(/BEGIN FOCUS/);
-    expect(lines[lines.length - 1]).toMatch(/END FOCUS/);
+    expect(lines[0]).toMatch(/BEGIN CONTROL/);
+    expect(lines[lines.length - 1]).toMatch(/END CONTROL/);
   });
 });
 
@@ -47,7 +47,7 @@ describe('buildHostsContent / stripManagedSection', () => {
     const twice = buildHostsContent(once, ['b.com']);
     expect(twice).not.toContain('a.com');
     expect(twice).toContain('b.com');
-    expect(twice.match(/BEGIN FOCUS/g)?.length).toBe(1);
+    expect(twice.match(/BEGIN CONTROL/g)?.length).toBe(1);
   });
 
   it('strip removes exactly the managed section', () => {
@@ -99,10 +99,10 @@ describe('hasManagedSection (stop is a no-op when clean)', () => {
 
 describe('privilegedCopyCommand (one dialog by construction)', () => {
   it('is a single osascript invocation covering copy, flush and reload', () => {
-    const cmd = privilegedCopyCommand('/tmp/hosts_focus_1', '/etc/hosts');
+    const cmd = privilegedCopyCommand('/tmp/hosts_control_1', '/etc/hosts');
     expect(cmd.match(/osascript/g)?.length).toBe(1);
     expect(cmd.match(/with administrator privileges/g)?.length).toBe(1);
-    expect(cmd).toContain('cp /tmp/hosts_focus_1 /etc/hosts');
+    expect(cmd).toContain('cp /tmp/hosts_control_1 /etc/hosts');
     expect(cmd).toContain('dscacheutil -flushcache');
     expect(cmd).toContain('killall -HUP mDNSResponder');
   });

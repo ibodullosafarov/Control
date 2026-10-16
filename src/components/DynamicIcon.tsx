@@ -22,7 +22,7 @@ export const AVAILABLE_ICONS = [
   { name: 'Code', label: 'Code / Programming' },
   { name: 'PenTool', label: 'Writing / Essays' },
   { name: 'Feather', label: 'Feather / Creative' },
-  { name: 'Flame', label: 'Flame / High Focus' },
+  { name: 'Flame', label: 'Flame / High Control' },
   { name: 'Zap', label: 'Zap / Sprint' },
   { name: 'Compass', label: 'Compass / Exploration' },
   { name: 'Clock', label: 'Clock / Timing' },

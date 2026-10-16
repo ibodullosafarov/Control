@@ -10,6 +10,8 @@ import {
   TasksMdReadResult,
 } from '../src/types';
 import { formatDateSuffix, hasDateSuffix, stripDateSuffix } from '../src/services/taskTitles';
+import { buildNoteMarkdown, noteFileName } from '../src/services/notes';
+import type { Note, NoteFolder } from '../src/types';
 
 export function sanitizeFilename(name: string): string {
   return name
@@ -91,23 +93,36 @@ export function taskIdFromFileName(fileName: string): string {
 // <vault>/<folderName> (default "Control Tasks"); those notes are migrated
 // into the Control folder on first use.
 
-export function resolveTasksFolder(config: ObsidianConfig): string {
-  const vault = (config.vaultPath || '').trim().replace(/\/+$/, '');
+export function sanitizeFolderLeaf(name: string): string {
+  const clean = sanitizeFilename(name).replace(/\.+/g, '-').trim();
+  if (!clean || clean === '.' || clean === '..') return 'Tasks';
+  return clean.slice(0, 80);
+}
+
+function atomicWriteFile(filePath: string, content: string): void {
+  const tmp = `${filePath}.tmp.${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  fs.writeFileSync(tmp, content, 'utf-8');
+  fs.renameSync(tmp, filePath);
+}
+
+export function resolveTasksFolder(config: ObsidianConfig): string {  const vault = (config.vaultPath || '').trim().replace(/\/+$/, '');
   if (!vault) return '';
   const rawLeaf = (config.folderName || '').trim();
-  const leaf = !rawLeaf || rawLeaf === 'Control Tasks' ? 'Tasks' : rawLeaf;
+  const leaf = !rawLeaf || rawLeaf === 'Control Tasks' ? 'Tasks' : sanitizeFolderLeaf(rawLeaf);
   if (path.basename(vault) === leaf) return vault;
-  return path.join(vault, 'Control', leaf);
+  const resolved = path.resolve(vault, 'Control', leaf);
+  if (!resolved.startsWith(path.resolve(vault) + path.sep)) return path.resolve(vault, 'Control', 'Tasks');
+  return resolved;
 }
 
 function legacyCandidateFolders(config: ObsidianConfig, targetDir: string): Array<{ dir: string; isAppDefault: boolean }> {
   const vault = (config.vaultPath || '').trim().replace(/\/+$/, '');
   if (!vault) return [];
-  const rawLeaf = (config.folderName || '').trim();
+  const rawLeaf = sanitizeFolderLeaf((config.folderName || '').trim());
   const candidates = new Map<string, boolean>();
   candidates.set(path.join(vault, 'Control Tasks'), true); // created by older builds
-  const custom = rawLeaf ? path.join(vault, rawLeaf) : '';
-  if (custom && custom !== path.join(vault, 'Control Tasks')) {
+  const custom = rawLeaf && rawLeaf !== 'Tasks' ? path.resolve(vault, rawLeaf) : '';
+  if (custom && custom.startsWith(path.resolve(vault) + path.sep) && custom !== path.join(vault, 'Control Tasks')) {
     candidates.set(custom, false);
   }
   return Array.from(candidates, ([dir, isAppDefault]) => ({ dir, isAppDefault })).filter(
@@ -125,10 +140,17 @@ function migrateLegacyFolders(config: ObsidianConfig, targetDir: string): void {
   for (const { dir: legacy, isAppDefault } of legacyCandidateFolders(config, targetDir)) {
     try {
       if (!fs.existsSync(legacy)) continue;
+      let stat: fs.Stats | null = null;
+      try { stat = fs.statSync(legacy); } catch { continue; }
+      if (!stat.isDirectory()) continue;
       const files = fs.readdirSync(legacy);
       for (const f of files) {
         const src = path.join(legacy, f);
         try {
+          let s: fs.Stats | null = null;
+          try { s = fs.statSync(src); } catch { continue; }
+          if (!s.isFile()) continue;
+          if (!f.toLowerCase().endsWith('.md')) continue;
           if (!isAppDefault) {
             if (!f.toLowerCase().endsWith('.md')) continue;
             const head = fs.readFileSync(src, 'utf-8').slice(0, 2000);
@@ -182,10 +204,23 @@ export class ObsidianManager {
 
   async openPath(targetPath: string): Promise<{ success: boolean; error?: string }> {
     try {
-      if (!fs.existsSync(targetPath)) {
+      if (typeof targetPath !== 'string' || !targetPath.trim()) {
+        return { success: false, error: 'Invalid path' };
+      }
+      const resolved = path.resolve(targetPath.trim());
+      if (!fs.existsSync(resolved)) {
         return { success: false, error: 'Path does not exist' };
       }
-      const errorMsg = await shell.openPath(targetPath);
+      // Constrain to markdown files, directories, and calendar exports —
+      // prevents opening arbitrary executables via IPC.
+      const lower = resolved.toLowerCase();
+      let isDir = false;
+      try { isDir = fs.statSync(resolved).isDirectory(); } catch { isDir = false; }
+      const allowed = isDir || lower.endsWith('.md') || lower.endsWith('.ics');
+      if (!allowed) {
+        return { success: false, error: 'Only markdown files, folders, and calendar files can be opened' };
+      }
+      const errorMsg = await shell.openPath(resolved);
       if (errorMsg) {
         return { success: false, error: errorMsg };
       }
@@ -255,9 +290,12 @@ export class ObsidianManager {
   // ── Import: parse every task note back into structured entries ────────────
   async readTasks(config: ObsidianConfig): Promise<TasksMdReadResult> {
     try {
-      const dir = prepareTasksDir(config);
+      const dir = resolveTasksFolder(config);
       if (!dir) {
         return { success: false, folder: '', tasks: [], error: 'No Obsidian vault or folder path selected.' };
+      }
+      if (!fs.existsSync(dir)) {
+        return { success: true, folder: dir, tasks: [] };
       }
       const out: ObsidianTaskFile[] = [];
       for (const f of fs.readdirSync(dir).sort()) {
@@ -393,7 +431,7 @@ export class ObsidianManager {
       if (wantsIndividual) {
         for (const task of tasksToSync) {
           const mode = task.modeId ? modeMap.get(task.modeId) : undefined;
-          const modeName = mode ? mode.name : 'Focus';
+          const modeName = mode ? mode.name : 'Control';
           const workDuration = mode?.workDuration || 45;
           const breakDuration = mode?.breakDuration || 10;
 
@@ -439,9 +477,9 @@ export class ObsidianManager {
             '',
             `- [${task.completed ? 'x' : ' '}] ${task.title} #task`,
             '',
-            '## Focus Details',
+            '## Control Details',
             `- **Mode**: ${modeName}`,
-            `- **Interval**: ${workDuration}m focus / ${breakDuration}m break`,
+            `- **Interval**: ${workDuration}m control / ${breakDuration}m break`,
             `- **Status**: ${task.completed ? '✅ Completed' : '⏳ In Progress'}`,
             `- **Created**: ${formatDate(task.createdAt)}`,
             task.completedAt ? `- **Completed At**: ${formatDate(task.completedAt)}` : '',
@@ -454,7 +492,7 @@ export class ObsidianManager {
             .filter((line) => line !== undefined)
             .join('\n');
 
-          fs.writeFileSync(filePath, body, 'utf-8');
+          atomicWriteFile(filePath, body);
 
           if (isExisting) {
             updatedCount++;
@@ -516,7 +554,7 @@ export class ObsidianManager {
         }
 
         masterLines.push('');
-        fs.writeFileSync(consolidatedFilePath, masterLines.join('\n'), 'utf-8');
+        atomicWriteFile(consolidatedFilePath, masterLines.join('\n'));
       }
 
       // 3. Garbage-collect app-owned notes that no longer correspond to a task
@@ -557,9 +595,12 @@ export class ObsidianManager {
             }
             continue;
           }
-          if (!fm.data.id && !hasCheckbox && !isAppTagged) continue; // unrelated note
-          const id = fm.data.id || taskIdFromFileName(f);
-          if (!allTaskIds.has(id) || !desiredPaths.has(fp)) {
+          if (!fm.data.id) continue; // never delete user/hand-made notes automatically
+          const id: string = fm.data.id as string;
+          // Delete only when the task no longer exists. A known task whose
+          // filename drifted (rename) is kept — export already wrote the new
+          // file; stale copies are resolved by explicit user action, not GC.
+          if (!allTaskIds.has(id)) {
             try {
               fs.unlinkSync(fp);
             } catch (err) {
@@ -582,6 +623,77 @@ export class ObsidianManager {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('Failed to sync tasks to Obsidian:', err);
+      return {
+        success: false,
+        syncedCount: 0,
+        createdCount: 0,
+        updatedCount: 0,
+        folder: config.vaultPath,
+        error: msg,
+      };
+    }
+  }
+
+  /**
+   * Export-only notes sync into <vault>/Control/Notes/*.md with YAML
+   * frontmatter carrying each note's origin (task, mode, folder). Control is
+   * the source of truth for note bodies: files are rewritten when content
+   * differs, and files for deleted notes are left alone (never delete user
+   * data silently).
+   */
+  async syncNotes(notes: Note[], folders: NoteFolder[], config: ObsidianConfig): Promise<ObsidianSyncResult> {
+    try {
+      const vault = (config.vaultPath || '').trim().replace(/\/+$/, '');
+      if (!vault) {
+        return {
+          success: false,
+          syncedCount: 0,
+          createdCount: 0,
+          updatedCount: 0,
+          folder: '',
+          error: 'No Obsidian vault or folder path selected.',
+        };
+      }
+      const targetDir = path.join(vault, 'Control', 'Notes');
+      if (!fs.existsSync(targetDir)) {
+        fs.mkdirSync(targetDir, { recursive: true });
+      }
+      const folderNameById = new Map(folders.map((f) => [f.id, f.name]));
+
+      let createdCount = 0;
+      let updatedCount = 0;
+      const fileIds: string[] = [];
+      for (const note of notes) {
+        const fileName = noteFileName(note);
+        const filePath = path.join(targetDir, fileName);
+        const body = buildNoteMarkdown(note, note.folderId ? folderNameById.get(note.folderId) : undefined);
+        fileIds.push(note.id);
+        if (fs.existsSync(filePath)) {
+          let existing = '';
+          try {
+            existing = fs.readFileSync(filePath, 'utf-8');
+          } catch {
+            existing = '';
+          }
+          if (existing === body) continue;
+          atomicWriteFile(filePath, body);
+          updatedCount += 1;
+        } else {
+          atomicWriteFile(filePath, body);
+          createdCount += 1;
+        }
+      }
+      return {
+        success: true,
+        syncedCount: notes.length,
+        createdCount,
+        updatedCount,
+        folder: targetDir,
+        fileIds,
+      };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('Failed to sync notes to Obsidian:', err);
       return {
         success: false,
         syncedCount: 0,

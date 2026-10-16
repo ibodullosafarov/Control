@@ -16,7 +16,7 @@ const MINDFUL_QUOTES = [
   'Deep work is rare and valuable. Check in with your intention before breaking momentum.',
   'Most fleeting distractions pass within a moment. You are in control.',
   'Clarity comes from completion. Protect what you started.',
-  'Your future self will thank you for the focus you maintain right now.',
+  'Your future self will thank you for the control you maintain right now.',
   'Take a deep breath and center yourself. Every completed block builds mastery.',
 ];
 
@@ -65,7 +65,7 @@ export const LeaveLockModal: React.FC<LeaveLockModalProps> = ({
       {/* Overlay */}
       <div
         onClick={onClose}
-        className="absolute inset-0 bg-black/75 transition-opacity duration-200"
+        className="absolute inset-0 bg-transparent transition-opacity duration-200"
       />
 
       {/* Modal Dialog Card */}
@@ -79,7 +79,7 @@ export const LeaveLockModal: React.FC<LeaveLockModalProps> = ({
         {/* Top Header Pill */}
         <div className="inline-flex items-center space-x-2 px-3.5 py-1 rounded-full text-xs font-semibold uppercase tracking-wider bg-sky-500/15 border border-sky-500/30 text-sky-400">
           <Shield className="w-3.5 h-3.5" />
-          <span>Exit Focus Session</span>
+          <span>Exit Control Session</span>
         </div>
 
         {/* Ambient Center Graphic */}
@@ -123,7 +123,7 @@ export const LeaveLockModal: React.FC<LeaveLockModalProps> = ({
             }}
           >
             <Sparkles className="w-4 h-4 fill-current group-hover:scale-110 transition-transform" />
-            <span>Stay Focused & Keep Going [Esc]</span>
+            <span>Stay Controlled & Keep Going [Esc]</span>
           </button>
 
           {/* Minimize to Menu Bar (Run in background) */}

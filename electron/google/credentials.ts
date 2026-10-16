@@ -9,7 +9,7 @@ import * as os from 'os';
  *   safeStorage → OS credential store on macOS) before touching disk.
  * - The OAuth client (client id/secret) is developer-supplied configuration,
  *   never hardcoded. It is resolved from the environment or
- *   ~/.focus-app/google-oauth.json and stays in the main process.
+ *   ~/.control-app/google-oauth.json and stays in the main process.
  *
  * This module deliberately has no `electron` import so it can be unit tested;
  * service.ts wires in the safeStorage-backed cipher.
@@ -149,7 +149,7 @@ export class TokenStore {
 
 /**
  * Resolve developer-supplied OAuth client credentials.
- * Order: environment variables → ~/.focus-app/google-oauth.json.
+ * Order: environment variables → ~/.control-app/google-oauth.json.
  *
  * The secret may live in either place independently: when the ID comes from
  * the environment but the secret was entered in Settings (or vice versa),
@@ -157,7 +157,7 @@ export class TokenStore {
  */
 export function resolveClientConfig(
   env: NodeJS.ProcessEnv = process.env,
-  configDir: string = path.join(os.homedir(), '.focus-app')
+  configDir: string = path.join(os.homedir(), '.control-app')
 ): ClientConfigResult {
   const fileCfg = readConfigFile(configDir);
   const envId = (env.GOOGLE_OAUTH_CLIENT_ID || '').trim();
@@ -200,7 +200,7 @@ function readConfigFile(configDir: string): { clientId?: string; clientSecret?: 
 
 /** Remove the stored OAuth client (id + secret). Idempotent; env-provided config is unaffected. */
 export function clearClientConfig(
-  configDir: string = path.join(os.homedir(), '.focus-app')
+  configDir: string = path.join(os.homedir(), '.control-app')
 ): { success: boolean; error?: string; removed?: boolean } {
   try {
     const file = path.join(configDir, 'google-oauth.json');
@@ -228,7 +228,7 @@ export function clearClientConfig(
 /** Persist a user-supplied client id (main process only; never sent back to the renderer beyond a boolean). */
 export function saveClientConfig(
   clientId: string,
-  configDir: string = path.join(os.homedir(), '.focus-app'),
+  configDir: string = path.join(os.homedir(), '.control-app'),
   clientSecret?: string
 ): { success: boolean; error?: string } {
   if (!isValidClientId(clientId)) {

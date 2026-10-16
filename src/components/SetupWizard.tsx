@@ -76,7 +76,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ theme, onComplete }) =
                 Welcome to Control
               </h1>
               <p className="text-xs font-medium" style={{ color: currentTheme.textMuted }}>
-                Your personal study & focus system. One quick thing before we start —
+                Your personal study & control system. One quick thing before we start —
               </p>
             </div>
           </div>
@@ -114,7 +114,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ theme, onComplete }) =
             className="w-full px-4 py-3 rounded-xl text-sm font-bold text-white cursor-pointer disabled:opacity-40 transition-all active:scale-[0.98] hover:brightness-110"
             style={{ backgroundColor: '#007aff' }}
           >
-            Start Focusing →
+            Start Controlling →
           </button>
         </div>
 

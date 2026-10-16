@@ -11,7 +11,7 @@ import {
 } from './types';
 
 /**
- * Durable sync state (~/.focus-app/google-sync/state.json).
+ * Durable sync state (~/.control-app/google-sync/state.json).
  *
  * Everything needed to resume after a crash/restart lives here: mappings,
  * per-calendar sync tokens, the pending operation queue and tombstones.

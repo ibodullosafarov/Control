@@ -25,8 +25,8 @@ class PlannerMarkdownService {
   }
 
   async getStatus(): Promise<PlannerMdStatus> {
-    if (window.focusAPI?.plannerMdStatus) {
-      return await window.focusAPI.plannerMdStatus(this.vaultPath);
+    if (window.controlAPI?.plannerMdStatus) {
+      return await window.controlAPI.plannerMdStatus(this.vaultPath);
     }
     return {
       enabled: false,
@@ -38,15 +38,15 @@ class PlannerMarkdownService {
   }
 
   async listTemplates(): Promise<PlannerTemplate[]> {
-    if (window.focusAPI?.plannerMdListTemplates) {
-      return await window.focusAPI.plannerMdListTemplates(this.vaultPath);
+    if (window.controlAPI?.plannerMdListTemplates) {
+      return await window.controlAPI.plannerMdListTemplates(this.vaultPath);
     }
     return [];
   }
 
   async readDay(date: string): Promise<DayMarkdownPlan | null> {
-    if (window.focusAPI?.plannerMdReadDay) {
-      return await window.focusAPI.plannerMdReadDay(this.vaultPath, date);
+    if (window.controlAPI?.plannerMdReadDay) {
+      return await window.controlAPI.plannerMdReadDay(this.vaultPath, date);
     }
     return null;
   }
@@ -56,8 +56,8 @@ class PlannerMarkdownService {
     date: string,
     variables: Record<string, string>
   ): Promise<ApplyTemplateResult> {
-    if (window.focusAPI?.plannerMdApplyTemplate) {
-      return await window.focusAPI.plannerMdApplyTemplate(
+    if (window.controlAPI?.plannerMdApplyTemplate) {
+      return await window.controlAPI.plannerMdApplyTemplate(
         this.vaultPath,
         templateName,
         date,
@@ -71,8 +71,8 @@ class PlannerMarkdownService {
     name: string,
     content: string
   ): Promise<PlannerMdOpResult & { template?: PlannerTemplate }> {
-    if (window.focusAPI?.plannerMdCreateTemplate) {
-      return await window.focusAPI.plannerMdCreateTemplate(this.vaultPath, name, content);
+    if (window.controlAPI?.plannerMdCreateTemplate) {
+      return await window.controlAPI.plannerMdCreateTemplate(this.vaultPath, name, content);
     }
     return { success: false, error: 'Electron API is not available in browser mode.' };
   }
@@ -81,8 +81,8 @@ class PlannerMarkdownService {
     date: string,
     name: string
   ): Promise<PlannerMdOpResult & { template?: PlannerTemplate }> {
-    if (window.focusAPI?.plannerMdSaveDayAsTemplate) {
-      return await window.focusAPI.plannerMdSaveDayAsTemplate(this.vaultPath, date, name);
+    if (window.controlAPI?.plannerMdSaveDayAsTemplate) {
+      return await window.controlAPI.plannerMdSaveDayAsTemplate(this.vaultPath, date, name);
     }
     return { success: false, error: 'Electron API is not available in browser mode.' };
   }
@@ -91,15 +91,15 @@ class PlannerMarkdownService {
     name: string,
     newName: string
   ): Promise<PlannerMdOpResult & { template?: PlannerTemplate }> {
-    if (window.focusAPI?.plannerMdDuplicateTemplate) {
-      return await window.focusAPI.plannerMdDuplicateTemplate(this.vaultPath, name, newName);
+    if (window.controlAPI?.plannerMdDuplicateTemplate) {
+      return await window.controlAPI.plannerMdDuplicateTemplate(this.vaultPath, name, newName);
     }
     return { success: false, error: 'Electron API is not available in browser mode.' };
   }
 
   async deleteTemplate(name: string): Promise<PlannerMdOpResult> {
-    if (window.focusAPI?.plannerMdDeleteTemplate) {
-      return await window.focusAPI.plannerMdDeleteTemplate(this.vaultPath, name);
+    if (window.controlAPI?.plannerMdDeleteTemplate) {
+      return await window.controlAPI.plannerMdDeleteTemplate(this.vaultPath, name);
     }
     return { success: false, error: 'Electron API is not available in browser mode.' };
   }
@@ -109,8 +109,8 @@ class PlannerMarkdownService {
     name: string,
     content: string
   ): Promise<PlannerMdOpResult & { template?: PlannerTemplate }> {
-    if (window.focusAPI?.plannerMdWriteTemplate) {
-      return await window.focusAPI.plannerMdWriteTemplate(this.vaultPath, name, content);
+    if (window.controlAPI?.plannerMdWriteTemplate) {
+      return await window.controlAPI.plannerMdWriteTemplate(this.vaultPath, name, content);
     }
     return { success: false, error: 'Electron API is not available in browser mode.' };
   }
@@ -120,8 +120,8 @@ class PlannerMarkdownService {
     taskIndex: number,
     completed: boolean
   ): Promise<PlannerMdTaskOpResult> {
-    if (window.focusAPI?.plannerMdToggleTask) {
-      return await window.focusAPI.plannerMdToggleTask(this.vaultPath, date, taskIndex, completed);
+    if (window.controlAPI?.plannerMdToggleTask) {
+      return await window.controlAPI.plannerMdToggleTask(this.vaultPath, date, taskIndex, completed);
     }
     return { success: false, error: 'Electron API is not available in browser mode.' };
   }
@@ -131,8 +131,8 @@ class PlannerMarkdownService {
     taskIndex: number,
     title: string
   ): Promise<PlannerMdTaskOpResult> {
-    if (window.focusAPI?.plannerMdUpdateTaskTitle) {
-      return await window.focusAPI.plannerMdUpdateTaskTitle(
+    if (window.controlAPI?.plannerMdUpdateTaskTitle) {
+      return await window.controlAPI.plannerMdUpdateTaskTitle(
         this.vaultPath,
         date,
         taskIndex,
@@ -143,16 +143,16 @@ class PlannerMarkdownService {
   }
 
   async openFile(filePath: string): Promise<PlannerMdOpResult> {
-    if (window.focusAPI?.plannerMdOpenFile) {
-      return await window.focusAPI.plannerMdOpenFile(filePath);
+    if (window.controlAPI?.plannerMdOpenFile) {
+      return await window.controlAPI.plannerMdOpenFile(filePath);
     }
     return { success: false, error: 'Electron API is not available in browser mode.' };
   }
 
   /** Raw template Markdown for renderer-side schedule parsing/generation. */
   async readTemplate(templateName: string): Promise<PlannerMdOpResult & { content?: string }> {
-    if (window.focusAPI?.plannerMdReadTemplate) {
-      return await window.focusAPI.plannerMdReadTemplate(this.vaultPath, templateName);
+    if (window.controlAPI?.plannerMdReadTemplate) {
+      return await window.controlAPI.plannerMdReadTemplate(this.vaultPath, templateName);
     }
     return { success: false, error: 'Electron API is not available in browser mode.' };
   }
@@ -165,15 +165,15 @@ class PlannerMarkdownService {
     date: string,
     sectionBody: string
   ): Promise<PlannerMdOpResult & { path?: string }> {
-    if (window.focusAPI?.plannerMdUpdateDaySchedule) {
-      return await window.focusAPI.plannerMdUpdateDaySchedule(this.vaultPath, date, sectionBody);
+    if (window.controlAPI?.plannerMdUpdateDaySchedule) {
+      return await window.controlAPI.plannerMdUpdateDaySchedule(this.vaultPath, date, sectionBody);
     }
     return { success: false, error: 'Electron API is not available in browser mode.' };
   }
 
   onFileChanged(callback: (payload: PlannerFileChangeEvent) => void): () => void {
-    if (window.focusAPI?.onPlannerFileChanged) {
-      return window.focusAPI.onPlannerFileChanged(callback);
+    if (window.controlAPI?.onPlannerFileChanged) {
+      return window.controlAPI.onPlannerFileChanged(callback);
     }
     return () => {};
   }

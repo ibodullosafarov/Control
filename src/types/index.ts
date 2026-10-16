@@ -15,6 +15,37 @@ export type ThemeId =
 
 export type BlockingStrategy = 'dynamic_hosts' | 'selfcontrol' | 'none';
 
+/** A user-created group for organizing study modes. */
+export interface ModeFolder {
+  id: string;
+  name: string;
+  createdAt: string;
+}
+
+/** A quick-captured note. Origin is tracked so notes stay attributable. */
+export interface Note {
+  id: string;
+  /** Markdown body (without frontmatter — added on Obsidian export). */
+  content: string;
+  /** Task being worked on when captured (snapshot — tasks can be deleted). */
+  taskId?: string;
+  taskTitle?: string;
+  modeId?: string;
+  modeName?: string;
+  folderId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A user-created folder for organizing notes. Linked to a mode optionally. */
+export interface NoteFolder {
+  id: string;
+  name: string;
+  /** When set, quick notes captured in this mode file here automatically. */
+  modeId?: string;
+  createdAt: string;
+}
+
 export interface StudyMode {
   id: string;
   name: string;
@@ -23,6 +54,11 @@ export interface StudyMode {
   color: string;
   workDuration: number; // in minutes
   breakDuration: number; // in minutes
+  /**
+   * @deprecated Cycle counts are chosen per task at creation time
+   * (`TaskItem.cycles`) instead. Kept as a silent fallback for sessions
+   * started without tasks and for data created before per-task cycles.
+   */
   cycles: number;
   longBreakDuration: number; // in minutes
   longBreakInterval: number; // every N cycles
@@ -36,6 +72,8 @@ export interface StudyMode {
   isDefault?: boolean;
   order: number;
   createdAt: string;
+  /** Optional folder this mode is organized under. Undefined = ungrouped. */
+  folderId?: string;
 }
 
 export type SessionPhase = 'work' | 'short_break' | 'long_break' | 'chill' | 'idle' | 'completed';
@@ -49,10 +87,114 @@ export interface TaskItem {
   sessionId?: string;
   createdAt: string;
   completedAt?: string;
+  /**
+   * Control blocks planned for this task, chosen when the task is written.
+   * Absent (older tasks) = follow the session/mode default at start time.
+   */
+  cycles?: number;
+  /** Planned effort in minutes, set by the user. */
+  estimateMinutes?: number;
+  /** Accumulated controlled minutes attributed from finished sessions. */
+  controlMinutes?: number;
+  /** Optional question/item target (e.g. 50 questions). Metadata + progress. */
+  targetCount?: number;
+  /** Label for targetCount (questions/problems/words/items/cards/pages). */
+  targetCountLabel?: string;
+  /** How many of targetCount are done (student-updated). */
+  doneCount?: number;
+  /** Spaced-repetition state. Absent = not a review task. */
+  review?: TaskReviewState;
   /** Origin of this task: mirrored from calendar or manual user task. */
   source?: 'calendar' | 'manual';
   /** If mirrored from a schedule block, the block.id. */
   sourceId?: string;
+}
+
+/** Spaced-repetition scheduling state for a review task. */
+export interface TaskReviewState {
+  /** Current interval in days. */
+  intervalDays: number;
+  /** Local YYYY-MM-DD day the next review is due. */
+  dueDay: string;
+  /** Consecutive successful repetitions. */
+  reps: number;
+}
+
+/** One frontmost-app sample captured by the optional activity tracker. */
+export interface ActivitySample {
+  /** Epoch ms, floored to the minute. */
+  t: number;
+  /** Frontmost application name, e.g. "Xcode". */
+  app: string;
+}
+
+/** A distraction blocked (or attempted) during protected control time. */
+export interface DistractionEvent {
+  /** Epoch ms. */
+  t: number;
+  kind: 'app' | 'site';
+  /** App name or domain. */
+  name: string;
+  /** Active session mode at the time, if any. */
+  modeId?: string;
+  modeName?: string;
+}
+
+// ── LAN control rooms (symbols mirror electron/rooms/net.ts) ────────────────
+
+/** One participant's published timer state. Epoch ms throughout. */
+export interface RoomTimerState {
+  phase: 'work' | 'break' | 'idle';
+  label: string;
+  endsAt: number | null;
+  updatedAt: number;
+}
+
+export interface RoomPeer {
+  id: string;
+  name: string;
+}
+
+export interface RoomsStatus {
+  hosting: boolean;
+  room: string | null;
+  port: number | null;
+  connected: boolean;
+  joinedRoom: string | null;
+  peers: RoomPeer[];
+  states: Record<string, RoomTimerState | null>;
+  localIps: string[];
+}
+
+export type RoomsEvent =
+  | { kind: 'roster'; peers: RoomPeer[]; states: Record<string, RoomTimerState | null> }
+  | { kind: 'status' }
+  | { kind: 'error'; error: string };
+
+/** A study topic inside an exam countdown. */
+export interface ExamTopic {
+  id: string;
+  name: string;
+  /** Target minutes of controlled work. */
+  targetMinutes: number;
+  /** Manually logged minutes so far. */
+  loggedMinutes: number;
+  /** Mode used when generating plan blocks for this topic. */
+  modeId?: string;
+}
+
+/** An exam countdown with a topic syllabus. */
+export interface Exam {
+  id: string;
+  name: string;
+  /** Exam day, local YYYY-MM-DD. */
+  date: string;
+  topics: ExamTopic[];
+  /** Minutes of exam prep per day used by the plan generator. */
+  dailyMinutes: number;
+  /** Default mode for generated blocks. */
+  modeId: string;
+  createdAt: string;
 }
 
 export interface ActiveSessionState {
@@ -77,6 +219,10 @@ export interface ActiveSessionState {
   isPaused: boolean;
   pauseStartedAt: number | null; // Date.now() timestamp when paused
   totalPauseSecondsThisPhase: number;
+  /** Cumulative pause across all phases (never reset mid-session). */
+  totalPauseSecondsAllPhases?: number;
+  /** Guard against double phase transitions from rapid Next/skip. */
+  transitioning?: boolean;
 
   // Tasks linked to this session:
   taskIds: string[]; // IDs of tasks in this session
@@ -88,13 +234,21 @@ export interface ActiveSessionState {
   blockedApps: string[];
   blockingStrategy: BlockingStrategy;
   /**
-   * Per-session Focus override (e.g. from a schedule template block).
+   * Per-session Control override (e.g. from a schedule template block).
    * True forces enforcement, false suppresses it for the whole session,
    * undefined follows the mode's own rules.
    */
   blockingOverride?: boolean;
   countTowardStats: boolean;
+  /** When false, Shield stays armed through breaks (mode default). */
+  allowBreakWebsites?: boolean;
   startedAt: string; // ISO string
+  /** Long-break length for this session (resolved from mode at start). */
+  longBreakDurationMins?: number;
+  /** Every N cycles use the long break. */
+  longBreakInterval?: number;
+  /** Per-task dwell seconds (taskId -> seconds in work phase). */
+  taskDwellSeconds?: Record<string, number>;
 }
 
 export interface TraySessionInfo {
@@ -106,7 +260,7 @@ export interface TraySessionInfo {
   modeName?: string;
 }
 
-export interface FocusSession {
+export interface ControlSession {
   id: string;
   modeId: string;
   modeName: string;
@@ -125,6 +279,22 @@ export interface FocusSession {
   tasksCompleted?: number;
   taskTitles?: string[];
   completedTaskTitles?: string[];
+  /**
+   * B-19: ids of the tasks attached to the session. Lets minute
+   * attribution credit session tasks completed outside the timer UI
+   * (queue view), not just tasks stamped with this session id.
+   */
+  taskIds?: string[];
+  /** Honest wall-clock minutes (control + breaks actually elapsed). */
+  wallMinutes?: number;
+  /** Minutes spent paused (not counted toward control). */
+  pauseMinutes?: number;
+  /** Work phases skipped via Next (phase-skips are logged, not silent). */
+  skippedPhases?: number;
+  /** True when finished before all cycles completed. */
+  finishedEarly?: boolean;
+  /** Visible auto-exec skip reason (overlap / missed / session-active). */
+  skipReason?: string;
 }
 
 export interface ScheduleBlock {
@@ -171,8 +341,10 @@ export interface ScheduleBlock {
   originTemplateAppliedAt?: string;
   /** Whether this block offers the Start-in-timer action. Defaults to true. */
   timerEnabled?: boolean;
-  /** Focus Mode preference for this session. Undefined = follow the mode's rules. */
-  focusMode?: boolean;
+  /** Control Mode preference for this session. Undefined = follow the mode's rules. */
+  controlMode?: boolean;
+  /** Human-readable import anomaly (all-day clamp, overnight, +1h repair). */
+  importWarning?: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -225,9 +397,9 @@ export type GoogleSyncPhase =
   | 'error';
 
 export interface GoogleSyncStatus {
-  /** False when running outside Electron (no focusAPI bridge). */
+  /** False when running outside Electron (no controlAPI bridge). */
   available: boolean;
-  /** OAuth client credentials resolvable (env / ~/.focus-app/google-oauth.json). */
+  /** OAuth client credentials resolvable (env / ~/.control-app/google-oauth.json). */
   configured: boolean;
   /** Where the client credentials came from (for setup guidance). */
   configSource?: string;
@@ -370,13 +542,17 @@ export interface UserSettings {
   defaultModeId: string;
   blockingEnabled: boolean;
   blockingStrategy: BlockingStrategy;
+  /** Daily control target in minutes. Powers the goal ring and goal-based streak. */
+  dailyGoalMinutes: number;
+  /** Optional frontmost-app activity tracking (off by default). */
+  activityTracking?: { enabled: boolean };
   googleCalendar: GoogleCalendarConfig;
   obsidian?: ObsidianConfig;
-  minimalModeOnFocus: boolean;
+  minimalModeOnControl: boolean;
   reducedMotion?: boolean;
   /** Legibility-optimized typography for readers with dyslexia. */
   dyslexicFont?: boolean;
-  /** Automatic study-day execution (notifications + scheduled focus sessions). */
+  /** Automatic study-day execution (notifications + scheduled control sessions). */
   autoExecute?: AutoExecuteConfig;
 }
 
@@ -455,9 +631,21 @@ export interface AutoExecEndResult {
   error?: string;
 }
 
-export interface FocusAppData {
+export interface ControlAppData {
   modes: StudyMode[];
-  sessions: FocusSession[];
+  /** User-created folders for organizing modes. Optional for backward compatibility. */
+  modeFolders?: ModeFolder[];
+  /** Frontmost-app samples from the optional activity tracker (pruned to ~14 days). */
+  activitySamples?: ActivitySample[];
+  /** Distractions blocked during protected control time (capped). */
+  distractions?: DistractionEvent[];
+  /** Exam countdowns with topic syllabi. */
+  exams?: Exam[];
+  /** Quick notes. */
+  notes?: Note[];
+  /** User-created folders for organizing notes. */
+  noteFolders?: NoteFolder[];
+  sessions: ControlSession[];
   tasks: TaskItem[];
   activeSession: ActiveSessionState | null;
   settings: UserSettings;
@@ -577,9 +765,9 @@ export interface PlannerFileChangeEvent {
 
 declare global {
   interface Window {
-    focusAPI?: {
-      getData: () => Promise<FocusAppData>;
-      saveData: (data: FocusAppData) => Promise<boolean>;
+    controlAPI?: {
+      getData: () => Promise<ControlAppData>;
+      saveData: (data: ControlAppData) => Promise<boolean>;
       startBlocking: (domains: string[], strategy: BlockingStrategy) => Promise<{ success: boolean; error?: string }>;
       stopBlocking: () => Promise<{ success: boolean; error?: string }>;
       getBlockerStatus: () => Promise<BlockerStatus>;
@@ -603,6 +791,22 @@ declare global {
       confirmQuit: () => Promise<void>;
       requestQuit: () => Promise<void>;
       minimizeToTray: () => Promise<void>;
+      setActivityTrackingEnabled: (enabled: boolean) => Promise<{ success: boolean; running?: boolean; error?: string }>;
+      onActivitySample: (callback: (sample: ActivitySample) => void) => () => void;
+      onDistractionBlocked: (callback: (event: DistractionEvent) => void) => () => void;
+      openQuickNote: () => Promise<{ success: boolean; error?: string }>;
+      saveQuickNote: (content: string) => Promise<{ success: boolean; note?: Note; error?: string }>;
+      syncNotesToObsidian: (notes: Note[], folders: NoteFolder[], config: ObsidianConfig) => Promise<ObsidianSyncResult>;
+      onNotesChanged: (callback: (notes: Note[]) => void) => () => void;
+      rooms: {
+        getStatus: () => Promise<RoomsStatus>;
+        hostStart: (room: string, name: string) => Promise<{ success: boolean; port?: number; error?: string }>;
+        hostStop: () => Promise<{ success: boolean }>;
+        publish: (state: RoomTimerState | null) => Promise<{ success: boolean }>;
+        join: (host: string, port: number, name: string) => Promise<{ success: boolean; error?: string }>;
+        leave: () => Promise<{ success: boolean }>;
+        onEvent: (callback: (event: RoomsEvent) => void) => () => void;
+      };
       getPurposeSessionRequest: () => Promise<PurposeSessionRequest | null>;
       acknowledgePurposeSessionRequest: (id: string) => Promise<boolean>;
       onPurposeSessionRequested: (callback: () => void) => () => void;

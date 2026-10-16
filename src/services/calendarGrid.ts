@@ -28,8 +28,15 @@ export function minutesToHHMM(minutes: number): string {
   const clamped = Math.max(0, Math.min(24 * 60, Math.round(minutes)));
   const h = Math.floor(clamped / 60);
   const m = clamped % 60;
+  // S-15/S-17: exact midnight (24:00) has no HH:mm representation — surface
+  // it as 23:59 but let callers detect the clamp via wasClampedToMidnight.
   if (h >= 24) return '23:59';
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+/** True when minutes hit the 24:00 clamp (caller should warn, not stay silent). */
+export function wasClampedToMidnight(minutes: number): boolean {
+  return Math.round(minutes) >= 24 * 60;
 }
 
 /**

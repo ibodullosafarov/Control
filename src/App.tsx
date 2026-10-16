@@ -1,8 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  FocusAppData,
+  ControlAppData,
   StudyMode,
-  FocusSession,
+  ModeFolder,
+  Exam,
+  Note,
+  NoteFolder,
+  ControlSession,
   ThemeId,
   UserSettings,
   DayPlan,
@@ -19,21 +23,24 @@ import { ActiveSessionView } from './components/ActiveSessionView';
 import { SessionCompletionView } from './components/SessionCompletionView';
 import { ModesManager } from './components/ModesManager';
 import { PlannerView } from './components/PlannerView';
+import { RoomsView } from './components/RoomsView';
+import { NotesView } from './components/NotesView';
 import { BlockerControl } from './components/BlockerControl';
 import { HistoryView } from './components/HistoryView';
 import { SettingsView } from './components/SettingsView';
 import { LeaveLockModal } from './components/LeaveLockModal';
 import { CommandPalette } from './components/CommandPalette';
-import { AmbientSoundControl } from './components/AmbientSoundControl';
 import { SetupWizard } from './components/SetupWizard';
 import { blockerClient } from './services/blockerClient';
-import { ambientAudio, AmbientSoundType } from './services/ambientAudio';
 import { obsidianService, mergeImportedTasks } from './services/obsidian';
 import { plannerMd } from './services/plannerMarkdown';
+import { allocateSessionMinutes } from './services/progress';
+import { stripDateSuffix } from './services/taskTitles';
+import { clampCycles, resolveSessionCycles, sessionWallMinutes, sessionWallMinutesFull, LONG_SESSION_CONFIRM_WALL_MINS } from './services/sessionFlow';
 import { applyMutationsToData, googleSync, useGoogleSyncStatus } from './services/googleSync';
 
 export const App: React.FC = () => {
-  const [data, setData] = useState<FocusAppData>(INITIAL_APP_DATA);
+  const [data, setData] = useState<ControlAppData>(INITIAL_APP_DATA);
   const [isLoaded, setIsLoaded] = useState(false);
   // Default to tasks powerhouse view
   const [activeTab, setActiveTab] = useState<NavTab>('tasks');
@@ -41,7 +48,7 @@ export const App: React.FC = () => {
 
   // Active Session state & Completed Session state
   const [activeSession, setActiveSession] = useState<ActiveSessionState | null>(null);
-  const [completedSessionSummary, setCompletedSessionSummary] = useState<FocusSession | null>(null);
+  const [completedSessionSummary, setCompletedSessionSummary] = useState<ControlSession | null>(null);
   const [selectedLauncherModeId, setSelectedLauncherModeId] = useState<string>('mode-deep-work');
   const activeSessionRef = useRef<ActiveSessionState | null>(null);
   const purposeRequestInFlightRef = useRef<string | null>(null);
@@ -49,10 +56,8 @@ export const App: React.FC = () => {
   // 30-Second Lock-in Leave Modal state
   const [isLeaveModalOpen, setIsLeaveModalOpen] = useState<boolean>(false);
 
-  // Command Palette & Ambient Sound States
+  // Command Palette state
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState<boolean>(false);
-  const [isSoundControlOpen, setIsSoundControlOpen] = useState<boolean>(false);
-  const [currentSound, setCurrentSound] = useState<AmbientSoundType | null>(null);
 
   // Initial Load from Storage / IPC
   useEffect(() => {
@@ -68,20 +73,60 @@ export const App: React.FC = () => {
       const activeTheme = stored.settings.theme || 'serika';
       setTheme(activeTheme);
       setSelectedLauncherModeId(
-        stored.settings.defaultModeId || stored.modes[0]?.id || 'mode-deep-work'
+        stored.modes.some((m) => m.id === stored.settings.defaultModeId)
+          ? stored.settings.defaultModeId
+          : stored.modes[0]?.id || 'mode-deep-work'
       );
 
       // Check if there is an active session from persistence
       if (stored.activeSession) {
         const active = stored.activeSession;
         const now = Date.now();
-        const elapsed = Math.floor((now - active.phaseStartTime - active.totalPauseSecondsThisPhase * 1000) / 1000);
+        // B-04: freeze elapsed while paused — a paused session must not be
+        // aged out by wall time between pauseStartedAt and relaunch.
+        const effectiveNow = active.isPaused && active.pauseStartedAt
+          ? active.pauseStartedAt
+          : now;
+        const elapsed = active.phaseStartTime <= 0
+          ? 0
+          : Math.floor((effectiveNow - active.phaseStartTime - active.totalPauseSecondsThisPhase * 1000) / 1000);
 
         if (elapsed < active.phaseDurationSeconds) {
           setActiveSession(active);
           setActiveTab('timer');
+          // S-07: re-arm blocking after restart (blockers are RAM-only).
+          const m = stored.modes.find((x) => x.id === active.modeId);
+          if (m && active.phase === 'work' && stored.settings.blockingEnabled !== false) {
+            blockerClient.startBlocking(active.blocklist, active.blockingStrategy).catch(() => {});
+            if ((active.blockedApps || []).length > 0) blockerClient.startAppBlocking(active.blockedApps || []).catch(() => {});
+          }
         } else {
-          const updated = { ...stored, activeSession: null };
+          // S-07: expired-on-restart is real work, not silent loss — record it.
+          const acc = active.accumulatedWorkSeconds || 0;
+          const sessions = [...stored.sessions];
+          if (acc >= 60) {
+            sessions.unshift({
+              id: active.id,
+              modeId: active.modeId,
+              modeName: active.modeName,
+              modeIcon: active.modeIcon,
+              isChillMode: !!active.isChillMode,
+              startTime: active.startedAt,
+              endTime: new Date().toISOString(),
+              plannedWorkMinutes: active.totalCycles * active.workDurationMins,
+              actualWorkMinutes: Math.max(1, Math.round(acc / 60)),
+              plannedCycles: active.totalCycles,
+              completedCycles: active.completedCyclesCount || 0,
+              status: 'cancelled',
+              countTowardStats: active.countTowardStats,
+              tasksTotal: active.taskIds.length,
+              tasksCompleted: (active.completedTaskIds || []).length,
+              taskIds: [...active.taskIds],
+              finishedEarly: true,
+              skipReason: 'app-restarted',
+            });
+          }
+          const updated = { ...stored, activeSession: null, sessions };
           setData(updated);
           storage.saveData(updated);
         }
@@ -111,22 +156,22 @@ export const App: React.FC = () => {
 
   // Listen to IPC trigger for 30s Leave Lock Modal from window close or Cmd+Q
   useEffect(() => {
-    if (window.focusAPI?.onTriggerLeaveModal) {
-      const cleanup = window.focusAPI.onTriggerLeaveModal(() => {
+    if (window.controlAPI?.onTriggerLeaveModal) {
+      const cleanup = window.controlAPI.onTriggerLeaveModal(() => {
         setIsLeaveModalOpen(true);
       });
       return cleanup;
     }
   }, []);
 
-  const dataRef = useRef<FocusAppData>(INITIAL_APP_DATA);
+  const dataRef = useRef<ControlAppData>(INITIAL_APP_DATA);
   useEffect(() => {
     dataRef.current = data;
   }, [data]);
 
   // Save changes to storage safely without stale closures
   const updateAndPersistData = useCallback(
-    (updater: FocusAppData | ((prev: FocusAppData) => FocusAppData)) => {
+    (updater: ControlAppData | ((prev: ControlAppData) => ControlAppData)) => {
       setData((prev) => {
         const next = typeof updater === 'function' ? updater(prev) : updater;
         dataRef.current = next;
@@ -137,15 +182,100 @@ export const App: React.FC = () => {
     []
   );
 
-  const persistData = (updated: FocusAppData) => {
+  const persistData = (updated: ControlAppData) => {
     updateAndPersistData(updated);
   };
 
   // ── Google Calendar two-way sync ─────────────────────────────────────────
   const googleStatus = useGoogleSyncStatus();
 
+  // ── Automatic time tracking + distraction autopsy (main → renderer) ─────
+  // Samples and kill events arrive here; the renderer owns caps/retention and
+  // attaches the active session's mode to distraction events.
   useEffect(() => {
-    const api = window.focusAPI?.googleCalendar;
+    const api = window.controlAPI;
+    if (!api?.onActivitySample || !api?.onDistractionBlocked) return;
+    const stopSamples = api.onActivitySample((sample) => {
+      if (!sample || typeof sample.t !== 'number' || !sample.app) return;
+      updateAndPersistData((prev) => ({
+        ...prev,
+        activitySamples: [...(prev.activitySamples || []), { t: sample.t, app: sample.app }].slice(-3000),
+      }));
+    });
+    const stopDistractions = api.onDistractionBlocked((event) => {
+      if (!event || typeof event.t !== 'number' || !event.name) return;
+      const active = activeSessionRef.current;
+      updateAndPersistData((prev) => ({
+        ...prev,
+        distractions: [
+          ...(prev.distractions || []),
+          {
+            t: event.t,
+            kind: event.kind,
+            name: event.name,
+            ...(active ? { modeId: active.modeId, modeName: active.modeName } : {}),
+          },
+        ].slice(-1000),
+      }));
+    });
+    return () => {
+      stopSamples();
+      stopDistractions();
+    };
+  }, [updateAndPersistData]);
+
+  // Enable/disable the main-process activity poller from settings.
+  useEffect(() => {
+    if (!isLoaded) return;
+    window.controlAPI?.setActivityTrackingEnabled(
+      data.settings.activityTracking?.enabled === true
+    ).catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoaded, data.settings.activityTracking?.enabled]);
+
+  // ── Quick notes captured from anywhere (global shortcut / menu bar) ──
+  // The main process appends to the file store; fold the same note objects
+  // into renderer state (deduped) so the next save keeps them.
+  useEffect(() => {
+    const api = window.controlAPI;
+    if (!api?.onNotesChanged) return;
+    return api.onNotesChanged((notes) => {
+      if (!Array.isArray(notes) || notes.length === 0) return;
+      updateAndPersistData((prev) => {
+        const existing = new Set((prev.notes || []).map((n) => n.id));
+        const fresh = notes.filter((n) => n && n.id && !existing.has(n.id));
+        if (fresh.length === 0) return prev;
+        return { ...prev, notes: [...(prev.notes || []), ...fresh] };
+      });
+    });
+  }, [updateAndPersistData]);
+
+  // ── LAN rooms: publish our timer state so peers see live presence ───────
+  useEffect(() => {
+    const api = window.controlAPI?.rooms;
+    if (!api) return;
+    const publish = () => {
+      const active = activeSessionRef.current;
+      if (!active) {
+        api.publish(null).catch(() => undefined);
+        return;
+      }
+      const phase =
+        active.phase === 'work' ? 'work' : active.phase === 'short_break' ? 'break' : 'idle';
+      api.publish({
+        phase,
+        label: `${active.modeName}${active.phase === 'work' ? '' : ' · break'}`,
+        endsAt: active.phaseStartTime + active.phaseDurationSeconds * 1000,
+        updatedAt: Date.now(),
+      }).catch(() => undefined);
+    };
+    publish();
+    const id = window.setInterval(publish, 20000);
+    return () => window.clearInterval(id);
+  }, [activeSession]);
+
+  useEffect(() => {
+    const api = window.controlAPI?.googleCalendar;
     if (!api) return;
 
     const stopInit = googleSync.init();
@@ -218,6 +348,12 @@ export const App: React.FC = () => {
   // Debounced so rapid changes (reorder bursts, StrictMode double-invoke)
   // coalesce into one export. Always reads the latest state at fire time.
   const syncTimerRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (syncTimerRef.current) {
+      window.clearTimeout(syncTimerRef.current);
+      syncTimerRef.current = null;
+    }
+  }, []);
   const handleObsidianSynced = useCallback(() => {
     updateAndPersistData((prev) => ({
       ...prev,
@@ -290,8 +426,8 @@ export const App: React.FC = () => {
   }, [updateAndPersistData, syncToObsidianIfEnabled]);
 
   useEffect(() => {
-    if (!window.focusAPI?.onTasksFileChanged) return;
-    return window.focusAPI.onTasksFileChanged(() => {
+    if (!window.controlAPI?.onTasksFileChanged) return;
+    return window.controlAPI.onTasksFileChanged(() => {
       void handleObsidianTasksChanged();
     });
   }, [handleObsidianTasksChanged]);
@@ -304,13 +440,14 @@ export const App: React.FC = () => {
   }, [isLoaded]);
 
   // Task Handlers
-  const handleAddTask = (title: string, modeId?: string): TaskItem => {
+  const handleAddTask = (title: string, modeId?: string, cycles?: number): TaskItem => {
     const newTask: TaskItem = {
       id: `task-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       title: title.trim(),
       completed: false,
       order: dataRef.current.tasks.length,
       modeId: modeId,
+      ...(cycles !== undefined ? { cycles: clampCycles(cycles, 1) } : {}),
       createdAt: new Date().toISOString(),
     };
     updateAndPersistData((prev) => {
@@ -410,32 +547,21 @@ export const App: React.FC = () => {
     });
   };
 
-  // Ambient Audio Controls
-  const handleToggleSound = (type: AmbientSoundType) => {
-    if (currentSound === type) {
-      ambientAudio.stop();
-      setCurrentSound(null);
-    } else {
-      ambientAudio.play(type);
-      setCurrentSound(type);
-    }
-  };
-
-  const handleStopSound = () => {
-    ambientAudio.stop();
-    setCurrentSound(null);
-  };
-
-  // Start Focus Session
+  // Start Control Session
   // Returns whether any blocking list was actually engaged, plus the first
   // failure when enforcement was requested but failed. Callers surface the
   // error loudly: a running timer must never silently pretend to block.
   const activateModeRestrictions = async (
     mode: StudyMode,
-    blockingOverride?: boolean
+    blockingOverride?: boolean,
+    globalBlockingEnabled?: boolean
   ): Promise<{ enforced: boolean; error?: string }> => {
+    // B-08: global kill-switch honored — Settings blockingEnabled off means
+    // no enforcement even when the mode requests it.
+    const globallyDisabled = globalBlockingEnabled === false;
     const shouldBlock =
-      blockingOverride ?? (!mode.isChillMode && mode.blockingStrategy !== 'none');
+      !globallyDisabled &&
+      (blockingOverride ?? (!mode.isChillMode && mode.blockingStrategy !== 'none'));
     const webBlocks = shouldBlock ? mode.blocklist : [];
     const appBlocks = shouldBlock ? (mode.blockedApps || []) : [];
 
@@ -476,8 +602,7 @@ export const App: React.FC = () => {
 
     const workMins = overrides?.workMins ?? mode.workDuration;
     const breakMins = overrides?.breakMins ?? mode.breakDuration;
-    const totalCycles = overrides?.cycles ?? mode.cycles;
-    const initialSecs = (mode.isChillMode ? workMins : workMins) * 60;
+    const initialSecs = workMins * 60;
 
     const requestedTask = overrides?.taskTitle?.trim();
     const newTask = requestedTask ? {
@@ -489,6 +614,41 @@ export const App: React.FC = () => {
       createdAt: new Date().toISOString(),
     } satisfies TaskItem : null;
     const taskIds = newTask ? [newTask.id, ...selectedTaskIds] : selectedTaskIds;
+    // Cycles: explicit per-session override wins, then the strongest per-task
+    // choice among the attached tasks, then the mode fallback (for tasks and
+    // flows that predate per-task cycles). B-07: with no explicit override,
+    // the queue is 1:1 — a longer task queue extends the run so no queued
+    // task is silently ignored.
+    let totalCycles = resolveSessionCycles({
+      tasks: dataRef.current.tasks,
+      taskIds,
+      modeCycles: mode.cycles,
+      overrideCycles: overrides?.cycles,
+    });
+    if (overrides?.cycles === undefined && taskIds.length > totalCycles) {
+      // B-07/B-20: the queue is 1:1 so nothing queued is silently ignored —
+      // but calendar-mirrored tasks (`task-cal-*`) are planner events, not
+      // chosen work: planning a day must not lengthen the next timer.
+      const countable = taskIds.filter((id) => {
+        const t = dataRef.current.tasks.find((task) => task.id === id);
+        return !t || t.source !== 'calendar';
+      });
+      if (countable.length > totalCycles) {
+        totalCycles = Math.min(12, Math.max(1, countable.length));
+      }
+    }
+    // S-03/S-08: unified long-session consent on ALL start paths (was only
+    // one-click task starts). Uses long-break-aware wall time.
+    const wallPreview = sessionWallMinutesFull(workMins, breakMins, totalCycles, mode.longBreakDuration, mode.longBreakInterval);
+    if (wallPreview > LONG_SESSION_CONFIRM_WALL_MINS) {
+      const hours = Math.floor(wallPreview / 60);
+      const mins = wallPreview % 60;
+      const wallStr = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+      const titles = taskIds.map((id) => dataRef.current.tasks.find((t) => t.id === id)?.title).filter(Boolean).slice(0, 3).join(', ');
+      if (!confirm(`Start ${totalCycles} control block${totalCycles === 1 ? '' : 's'} in ${mode.name} (~${wallStr} wall time with breaks${titles ? `: ${titles}` : ''})?\n\nSource: ${overrides?.workMins !== undefined ? 'planner block' : 'manual queue'} · ${workMins}m work / ${breakMins}m break.`)) {
+        return false;
+      }
+    }
 
     const newSessionState: ActiveSessionState = {
       id: `session-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
@@ -511,6 +671,7 @@ export const App: React.FC = () => {
       isPaused: false,
       pauseStartedAt: null,
       totalPauseSecondsThisPhase: 0,
+      totalPauseSecondsAllPhases: 0,
       taskIds,
       activeTaskId: taskIds[0] || null,
       completedTaskIds: [],
@@ -519,15 +680,19 @@ export const App: React.FC = () => {
       blockingStrategy: mode.blockingStrategy,
       blockingOverride: overrides?.blockingOverride,
       countTowardStats: mode.countTowardStats,
+      allowBreakWebsites: mode.allowBreakWebsites !== false,
       startedAt: new Date().toISOString(),
+      longBreakDurationMins: mode.longBreakDuration || 0,
+      longBreakInterval: mode.longBreakInterval || 0,
+      taskDwellSeconds: {},
     };
 
-    const blocking = await activateModeRestrictions(mode, overrides?.blockingOverride);
+    const blocking = await activateModeRestrictions(mode, overrides?.blockingOverride, dataRef.current.settings.blockingEnabled);
     lastBlockingOutcome.current = blocking;
     if (blocking.error) {
       // The session still starts (existing behavior), but a failed blocker
       // must never look active: say so loudly instead of failing silently.
-      await window.focusAPI?.sendNotification(
+      await window.controlAPI?.sendNotification(
         'Blocking failed to start',
         `${blocking.error} The timer is running WITHOUT blocking.`
       );
@@ -549,13 +714,17 @@ export const App: React.FC = () => {
 
   // Purpose hands Control an exact Mode ID. No duration, blocklist, or mode
   // profile crosses the app boundary, so Modes stay the single source of truth.
+  // control:// URLs may carry a mode *name* instead — resolve that too.
   const startPurposeSession = useCallback(async (request: PurposeSessionRequest) => {
     if (purposeRequestInFlightRef.current === request.id || activeSessionRef.current) return;
 
-    const mode = data.modes.find((candidate) => candidate.id === request.modeId);
+    const wanted = request.modeId.trim();
+    const mode =
+      data.modes.find((candidate) => candidate.id === wanted) ||
+      data.modes.find((candidate) => candidate.name.toLowerCase() === wanted.toLowerCase());
     if (!mode) {
-      await window.focusAPI?.acknowledgePurposeSessionRequest(request.id);
-      window.focusAPI?.sendNotification(
+      await window.controlAPI?.acknowledgePurposeSessionRequest(request.id);
+      window.controlAPI?.sendNotification(
         'Purpose could not start a session',
         'The selected Control Mode no longer exists.'
       );
@@ -566,7 +735,7 @@ export const App: React.FC = () => {
     try {
       const started = await handleStartSession(mode, [], { taskTitle: request.purpose });
       if (started) {
-        await window.focusAPI?.acknowledgePurposeSessionRequest(request.id);
+        await window.controlAPI?.acknowledgePurposeSessionRequest(request.id);
       }
     } finally {
       purposeRequestInFlightRef.current = null;
@@ -574,14 +743,17 @@ export const App: React.FC = () => {
   }, [data]);
 
   useEffect(() => {
-    if (!isLoaded || !window.focusAPI?.getPurposeSessionRequest) return;
+    if (!isLoaded || !window.controlAPI?.getPurposeSessionRequest) return;
     const checkForPurposeSession = () => {
-      window.focusAPI?.getPurposeSessionRequest?.().then((request) => {
-        if (request) void startPurposeSession(request);
-      });
+      window.controlAPI?.getPurposeSessionRequest
+        ?.()
+        .then((request) => {
+          if (request) void startPurposeSession(request);
+        })
+        .catch(() => undefined);
     };
     checkForPurposeSession();
-    return window.focusAPI.onPurposeSessionRequested?.(checkForPurposeSession);
+    return window.controlAPI.onPurposeSessionRequested?.(checkForPurposeSession);
   }, [isLoaded, startPurposeSession]);
 
   // ── Automatic study-day execution (main-process scheduler) ───────────────
@@ -598,7 +770,7 @@ export const App: React.FC = () => {
   startSessionRef.current = handleStartSession;
 
   useEffect(() => {
-    const api = window.focusAPI;
+    const api = window.controlAPI;
     if (!api?.onAutoExecStart || !api?.onAutoExecEnd) return;
 
     const stopStart = api.onAutoExecStart(async (req) => {
@@ -614,7 +786,7 @@ export const App: React.FC = () => {
           workMins: block.workDuration,
           breakMins: block.breakDuration,
           cycles: block.cycles,
-          blockingOverride: block.focusMode,
+          blockingOverride: block.controlMode,
         });
         if (!started) return { success: true, started: false, reason: 'session-active' };
         autoExecRef.current = { blockId: block.id, date: block.date };
@@ -683,10 +855,14 @@ export const App: React.FC = () => {
   }, [updateAndPersistData]);
 
   // Finish session normally
-  const handleFinishSession = useCallback((sessionSummary: FocusSession) => {
+  const handleFinishSession = useCallback((sessionSummary: ControlSession) => {
+    const dwell = activeSessionRef.current?.taskDwellSeconds;
     updateAndPersistData((prev) => ({
       ...prev,
       sessions: [sessionSummary, ...prev.sessions],
+      tasks: sessionSummary.countTowardStats
+        ? allocateSessionMinutes(sessionSummary, prev.tasks, dwell)
+        : prev.tasks,
       activeSession: null,
     }));
     setActiveSession(null);
@@ -694,113 +870,214 @@ export const App: React.FC = () => {
     setCompletedSessionSummary(sessionSummary);
   }, [updateAndPersistData]);
 
-  // Cancel session
+  // Cancel session — B-05: never silently drop real work. Sessions with
+  // ≥60s of accumulated control are recorded as cancelled so History/Stats
+  // agree with the timer; shorter ones are discarded as noise.
   const handleCancelSession = useCallback(() => {
     blockerClient.stopBlocking();
     blockerClient.stopAppBlocking();
+    const active = activeSessionRef.current;
     setActiveSession(null);
     activeSessionRef.current = null;
-    updateAndPersistData((prev) => ({
-      ...prev,
-      activeSession: null,
-    }));
+    updateAndPersistData((prev) => {
+      if (!active) return { ...prev, activeSession: null };
+      const accSecs = (active.accumulatedWorkSeconds || 0);
+      if (accSecs >= 60) {
+        const actualMins = Math.max(1, Math.round(accSecs / 60));
+        const cancelled: ControlSession = {
+          id: active.id,
+          modeId: active.modeId,
+          modeName: active.modeName,
+          modeIcon: active.modeIcon,
+          isChillMode: !!active.isChillMode,
+          startTime: active.startedAt,
+          endTime: new Date().toISOString(),
+          plannedWorkMinutes: active.totalCycles * active.workDurationMins,
+          actualWorkMinutes: actualMins,
+          plannedCycles: active.totalCycles,
+          completedCycles: active.completedCyclesCount || 0,
+          status: 'cancelled',
+          countTowardStats: active.countTowardStats,
+          tasksTotal: active.taskIds.length,
+          tasksCompleted: (active.completedTaskIds || []).length,
+          // B-19: carry attached task ids for minute attribution.
+          taskIds: [...active.taskIds],
+          finishedEarly: (active.completedCyclesCount || 0) < active.totalCycles,
+          skippedPhases: (active as unknown as { skippedPhases?: number }).skippedPhases || 0,
+        };
+        return { ...prev, activeSession: null, sessions: [...prev.sessions, cancelled] };
+      }
+      // S-17: explain the discard instead of silent loss.
+      window.controlAPI?.sendNotification?.('Session discarded', 'Under 60s of control is not saved — keep going to log it.');
+      return { ...prev, activeSession: null };
+    });
     setCompletedSessionSummary(null);
     setActiveTab('tasks');
   }, [updateAndPersistData]);
 
   // Immediate exit app (no time restriction)
   const handleConfirmLeave = async () => {
-    await blockerClient.stopBlocking();
-    await blockerClient.stopAppBlocking();
-    ambientAudio.stop();
-    if (window.focusAPI?.confirmQuit) {
-      await window.focusAPI.confirmQuit();
-    } else {
-      setIsLeaveModalOpen(false);
-      handleCancelSession();
+    try {
+      await blockerClient.stopBlocking();
+      await blockerClient.stopAppBlocking();
+      if (window.controlAPI?.confirmQuit) {
+        await window.controlAPI.confirmQuit();
+      } else {
+        setIsLeaveModalOpen(false);
+        handleCancelSession();
+      }
+    } catch (err) {
+      console.warn('Leave/exit failed:', err);
     }
   };
 
   const handleMinimizeToTray = async () => {
-    if (window.focusAPI?.minimizeToTray) {
-      await window.focusAPI.minimizeToTray();
+    try {
+      if (window.controlAPI?.minimizeToTray) {
+        await window.controlAPI.minimizeToTray();
+      }
+    } catch (err) {
+      console.warn('Minimize to tray failed:', err);
     }
   };
 
   const handleSaveModes = (updatedModes: StudyMode[]) => {
-    const updated = { ...data, modes: updatedModes };
-    persistData(updated);
+    updateAndPersistData((prev) => ({ ...prev, modes: updatedModes }));
+  };
+
+  const handleSaveModeFolders = (modeFolders: ModeFolder[]) => {
+    updateAndPersistData((prev) => ({ ...prev, modeFolders }));
+  };
+
+  const handleSaveModesAndFolders = (updatedModes: StudyMode[], modeFolders: ModeFolder[]) => {
+    updateAndPersistData((prev) => ({ ...prev, modes: updatedModes, modeFolders }));
+  };
+
+  const handleSaveExams = (exams: Exam[]) => {
+    updateAndPersistData((prev) => ({ ...prev, exams }));
+  };
+
+  const handleSaveNotes = (notes: Note[]) => {
+    updateAndPersistData((prev) => ({ ...prev, notes }));
+  };
+
+  const handleSaveNoteFolders = (noteFolders: NoteFolder[]) => {
+    updateAndPersistData((prev) => ({ ...prev, noteFolders }));
+  };
+
+  const handleSaveNotesAndFolders = (notes: Note[], noteFolders: NoteFolder[]) => {
+    updateAndPersistData((prev) => ({ ...prev, notes, noteFolders }));
   };
 
   const handleSavePlan = (date: string, plan: DayPlan) => {
     // Mirror planner blocks to tasks so events appear in the Tasks view.
-    const existingPlan = data.plans[date];
-    const prevBlocks = existingPlan?.blocks || [];
-    const nextBlocks = plan.blocks || [];
-    const prevById = new Map(prevBlocks.map((b) => [b.id, b]));
-    const nextById = new Map(nextBlocks.map((b) => [b.id, b]));
+    // Functional update: rapid successive saves (drag + modal + template)
+    // must never operate on a stale task list and duplicate mirrors.
+    updateAndPersistData((prev) => {
+      const nextBlocks = plan.blocks || [];
+      const nextById = new Map(nextBlocks.map((b) => [b.id, b]));
+      const cleanOf = (s: string) => stripDateSuffix(s || '').trim().toLowerCase();
 
-    let tasks = [...data.tasks];
+      let tasks = [...prev.tasks];
 
-    // Remove mirrored tasks for blocks that no longer exist
-    tasks = tasks.filter((t) => {
-      if (t.source === 'calendar' && t.sourceId) {
-        return nextById.has(t.sourceId);
-      }
-      return true;
-    });
-
-    // Upsert mirrored tasks for blocks that exist
-    for (const b of nextBlocks) {
-      const existingTask = tasks.find((t) => t.source === 'calendar' && t.sourceId === b.id);
-      if (existingTask) {
-        const mode = data.modes.find((m) => m.id === b.modeId);
-        const display = (b.modeName || mode?.name || 'Focus block').trim();
-        if (existingTask.title !== display) {
-          tasks = tasks.map((t) => (t.id === existingTask.id ? { ...t, title: display } : t));
+      // Remove mirrored tasks for blocks that no longer exist.
+      // S-13: completed mirrors are kept as manual tasks (completion must not vanish).
+      tasks = tasks.flatMap((t) => {
+        if (t.source === 'calendar' && t.sourceId && !nextById.has(t.sourceId)) {
+          if (t.completed) return [{ ...t, source: 'manual' as const, sourceId: undefined }];
+          return [];
         }
-      } else {
-        const mode = data.modes.find((m) => m.id === b.modeId);
-        const display = (b.modeName || mode?.name || 'Focus block').trim();
-        const newTask: TaskItem = {
-          id: `task-cal-${b.id}`,
-          title: display,
-          completed: b.status === 'completed',
-          order: tasks.length,
-          modeId: b.modeId,
-          createdAt: b.createdAt || new Date().toISOString(),
-          source: 'calendar',
-          sourceId: b.id,
-        };
-        tasks = [...tasks, newTask];
-      }
-    }
+        return [t];
+      });
 
-    // Preserve completed state for existing mirrored tasks based on block status
-    tasks = tasks.map((t) => {
-      if (t.source === 'calendar' && t.sourceId && nextById.has(t.sourceId)) {
-        const b = nextById.get(t.sourceId)!;
-        if (t.completed !== (b.status === 'completed')) {
-          return {
-            ...t,
-            completed: b.status === 'completed',
-            completedAt: b.status === 'completed' ? t.completedAt || new Date().toISOString() : undefined,
-          };
+      // Upsert mirrored tasks for blocks that exist
+      for (const b of nextBlocks) {
+        const existingTask = tasks.find((t) => t.source === 'calendar' && t.sourceId === b.id);
+        if (existingTask) {
+          const mode = prev.modes.find((m) => m.id === b.modeId);
+          const display = (b.modeName || mode?.name || 'Control block').trim();
+          if (existingTask.title !== display && cleanOf(existingTask.title) !== cleanOf(display)) {
+            tasks = tasks.map((t) => (t.id === existingTask.id ? { ...t, title: display } : t));
+          }
+        } else {
+          const mode = prev.modes.find((m) => m.id === b.modeId);
+          const display = (b.modeName || mode?.name || 'Control block').trim();
+          // Adopt: the block was scheduled from an existing manual task with
+          // the same (display) title — link that task instead of adding a
+          // second task-cal-* copy that looks like a duplicate.
+          const manualMatch = tasks.find(
+            (t) =>
+              t.source !== 'calendar' &&
+              !t.completed &&
+              cleanOf(t.title) === cleanOf(display) &&
+              cleanOf(display).length > 0
+          );
+          if (manualMatch) {
+            tasks = tasks.map((t) =>
+              t.id === manualMatch.id
+                ? { ...t, source: 'calendar' as const, sourceId: b.id, modeId: t.modeId || b.modeId }
+                : t
+            );
+          } else {
+            const newTask: TaskItem = {
+              id: `task-cal-${b.id}`,
+              title: display,
+              completed: b.status === 'completed',
+              order: tasks.length,
+              modeId: b.modeId,
+              createdAt: b.createdAt || new Date().toISOString(),
+              source: 'calendar',
+              sourceId: b.id,
+            };
+            // Guard against a stale double-save inserting the same id twice.
+            if (!tasks.some((t) => t.id === newTask.id)) {
+              tasks = [...tasks, newTask];
+            }
+          }
         }
       }
-      return t;
-    });
 
-    const updated = {
-      ...data,
-      plans: {
-        ...data.plans,
-        [date]: plan,
-      },
-      tasks,
-    };
-    persistData(updated);
-    syncToObsidianIfEnabled(tasks);
+      // Heal leftovers from the old double-create bug: an uncompleted manual
+      // task with the same display title as a calendar mirror, holding no
+      // recorded progress, is the orphaned extra copy — drop it.
+      const mirrorTitles = new Set(
+        tasks
+          .filter((t) => t.source === 'calendar' && t.sourceId)
+          .map((t) => cleanOf(t.title))
+      );
+      tasks = tasks.filter((t) => {
+        if (t.source === 'calendar' || t.completed || !mirrorTitles.has(cleanOf(t.title))) return true;
+        const hasProgress =
+          (t.controlMinutes || 0) > 0 || t.review != null || t.targetCount != null || t.estimateMinutes != null;
+        return hasProgress;
+      });
+
+      // Preserve completed state for existing mirrored tasks based on block status
+      tasks = tasks.map((t) => {
+        if (t.source === 'calendar' && t.sourceId && nextById.has(t.sourceId)) {
+          const b = nextById.get(t.sourceId)!;
+          if (t.completed !== (b.status === 'completed')) {
+            return {
+              ...t,
+              completed: b.status === 'completed',
+              completedAt: b.status === 'completed' ? t.completedAt || new Date().toISOString() : undefined,
+            };
+          }
+        }
+        return t;
+      });
+
+      const updated = {
+        ...prev,
+        plans: {
+          ...prev.plans,
+          [date]: plan,
+        },
+        tasks,
+      };
+      syncToObsidianIfEnabled(tasks);
+      return updated;
+    });
   };
 
   const handleSaveSettings = (settings: UserSettings) => {
@@ -825,12 +1102,12 @@ export const App: React.FC = () => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `focus-backup-${new Date().toISOString().split('T')[0]}.json`;
+    a.download = `control-backup-${new Date().toISOString().split('T')[0]}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
-  const handleImportBackup = (imported: FocusAppData) => {
+  const handleImportBackup = (imported: ControlAppData) => {
     persistData(imported);
     if (imported.settings?.theme) {
       setTheme(imported.settings.theme);
@@ -858,7 +1135,9 @@ export const App: React.FC = () => {
           4: 'planner',
           5: 'modes',
           6: 'history',
-          7: 'settings',
+          7: 'rooms',
+          8: 'notes',
+          9: 'settings',
         };
         if (tabMap[num]) {
           e.preventDefault();
@@ -937,32 +1216,54 @@ export const App: React.FC = () => {
         }}
         onRequestLeave={() => setIsLeaveModalOpen(true)}
         onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
-        currentSound={currentSound}
-        onOpenSoundControl={() => setIsSoundControlOpen(true)}
       />
 
       {/* Main Content Workspace */}
       <main className="flex-1 flex flex-col overflow-hidden relative z-10">
-        {/* Tab 1: Tasks & Focus Studio (The Main View!) */}
+        {/* Tab 1: Tasks & Control Studio (The Main View!) */}
         {(activeTab === 'tasks' || activeTab === 'launcher') && (
           <TasksView
             tasks={data.tasks}
             modes={data.modes}
+            modeFolders={data.modeFolders}
+            sessions={data.sessions}
+            dailyGoalMinutes={data.settings.dailyGoalMinutes}
             onAddTask={handleAddTask}
             onUpdateTask={handleUpdateTask}
             onDeleteTask={handleDeleteTask}
             onReorderTasks={handleReorderTasks}
             onClearCompletedTasks={handleClearCompletedTasks}
-            onStartFocusWithTask={(task, modeOverride) => {
+            onStartControlWithTask={(task, modeOverride) => {
               const mode =
                 modeOverride ||
                 (task.modeId ? data.modes.find((m) => m.id === task.modeId) : null) ||
                 data.modes.find((m) => m.id === selectedLauncherModeId) ||
                 data.modes[0];
+              // B-17: one click on a task with per-task cycles silently
+              // resolves to a multi-hour session (per-task choice wins).
+              // Above an hour of wall time, ask first.
+              const previewCycles = resolveSessionCycles({
+                tasks: data.tasks,
+                taskIds: [task.id],
+                modeCycles: mode.cycles,
+              });
+              const wall = sessionWallMinutes(mode.workDuration, mode.breakDuration, previewCycles);
+              if (wall > LONG_SESSION_CONFIRM_WALL_MINS) {
+                const hours = Math.floor(wall / 60);
+                const mins = wall % 60;
+                const wallStr = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+                if (
+                  !confirm(
+                    `"${task.title}" is set to ${previewCycles} control blocks (~${wallStr} wall time with breaks).\n\nStart a ${wallStr} session?`
+                  )
+                ) {
+                  return;
+                }
+              }
               handleStartSession(mode, [task.id]);
             }}
-            onStartStandaloneSession={(mode, taskIds) => {
-              handleStartSession(mode, taskIds);
+            onStartStandaloneSession={(mode, taskIds, cycles) => {
+              handleStartSession(mode, taskIds, cycles !== undefined ? { cycles } : undefined);
             }}
             onOpenBlocker={() => setActiveTab('blocker')}
             onOpenModes={() => setActiveTab('modes')}
@@ -974,7 +1275,7 @@ export const App: React.FC = () => {
           />
         )}
 
-        {/* Tab 2: Focus Timer (Active Session View / Session Completion Summary) */}
+        {/* Tab 2: Control Timer (Active Session View / Session Completion Summary) */}
         {activeTab === 'timer' && (
           completedSessionSummary ? (
             <SessionCompletionView
@@ -997,6 +1298,27 @@ export const App: React.FC = () => {
             <ActiveSessionView
               sessionState={activeSession}
               allTasks={data.tasks}
+              modes={data.modes}
+              onSwitchModeForRemaining={(modeId) => {
+                const m = data.modes.find((x) => x.id === modeId);
+                if (!m || !activeSessionRef.current) return;
+                if (!confirm(`Switch remaining cycles to ${m.name} (${m.workDuration}m/${m.breakDuration}m)? Current cycle keeps its timer.`)) return;
+                handleUpdateSessionState({
+                  ...activeSessionRef.current,
+                  modeId: m.id,
+                  modeName: m.name,
+                  modeIcon: m.icon,
+                  modeColor: m.color,
+                  workDurationMins: m.workDuration,
+                  breakDurationMins: m.breakDuration,
+                  longBreakDurationMins: m.longBreakDuration || 0,
+                  longBreakInterval: m.longBreakInterval || 0,
+                  blocklist: m.blocklist,
+                  blockedApps: m.blockedApps || [],
+                  blockingStrategy: m.blockingStrategy,
+                  countTowardStats: m.countTowardStats,
+                });
+              }}
               onUpdateSessionState={handleUpdateSessionState}
               onUpdateTask={handleUpdateTask}
               onAddTask={handleAddTask}
@@ -1007,8 +1329,6 @@ export const App: React.FC = () => {
               onRequestLeave={() => setIsLeaveModalOpen(true)}
               theme={theme}
               settings={data.settings}
-              currentSound={currentSound}
-              onOpenSoundControl={() => setIsSoundControlOpen(true)}
               externalFinishSignal={autoExecFinishSignal}
             />
           ) : (
@@ -1019,13 +1339,13 @@ export const App: React.FC = () => {
                   className="text-xl font-bold"
                   style={{ color: currentTheme.textPrimary }}
                 >
-                  No Active Focus Session
+                  No Active Control Session
                 </h2>
                 <p 
                   className="text-xs font-medium"
                   style={{ color: currentTheme.textSecondary }}
                 >
-                  Select a task from your Tasks Hub or choose a study mode to start focusing.
+                  Select a task from your Tasks Hub or choose a study mode to start controlling.
                 </p>
                 <button
                   onClick={() => setActiveTab('tasks')}
@@ -1035,7 +1355,7 @@ export const App: React.FC = () => {
                     color: currentTheme.accentText,
                   }}
                 >
-                  Open Tasks & Focus Hub [1]
+                  Open Tasks & Control Hub [1]
                 </button>
               </div>
             </div>
@@ -1054,6 +1374,10 @@ export const App: React.FC = () => {
         {activeTab === 'planner' && (
           <PlannerView
             modes={data.modes}
+            modeFolders={data.modeFolders}
+            exams={data.exams || []}
+            onSaveExams={handleSaveExams}
+            sessions={data.sessions}
             plans={data.plans}
             tasks={data.tasks}
             onSavePlan={handleSavePlan}
@@ -1062,14 +1386,13 @@ export const App: React.FC = () => {
                 workMins: block.workDuration,
                 breakMins: block.breakDuration,
                 cycles: block.cycles,
-                // Per-session Focus preference from schedule templates.
+                // Per-session Control preference from schedule templates.
                 // Undefined = follow the mode's own blocking rules.
-                blockingOverride: block.focusMode,
+                blockingOverride: block.controlMode,
               });
             }}
             onBackToLauncher={() => setActiveTab('tasks')}
             onOpenSettings={() => setActiveTab('settings')}
-            onAddTask={handleAddTask}
             calendarConfig={data.settings.googleCalendar}
             obsidianConfig={data.settings.obsidian}
             onObsidianSynced={handleObsidianSynced}
@@ -1080,6 +1403,7 @@ export const App: React.FC = () => {
               })
             }
             theme={theme}
+            dailyGoalMinutes={data.settings.dailyGoalMinutes}
           />
         )}
 
@@ -1087,7 +1411,10 @@ export const App: React.FC = () => {
         {activeTab === 'modes' && (
           <ModesManager
             modes={data.modes}
+            modeFolders={data.modeFolders || []}
             onSaveModes={handleSaveModes}
+            onSaveFolders={handleSaveModeFolders}
+            onSaveModesAndFolders={handleSaveModesAndFolders}
             onSelectMode={(id) => {
               setSelectedLauncherModeId(id);
               setActiveTab('tasks');
@@ -1097,11 +1424,16 @@ export const App: React.FC = () => {
           />
         )}
 
-        {/* Tab 6: Focus History & Analytics */}
+        {/* Tab 6: Control History & Analytics */}
         {activeTab === 'history' && (
           <HistoryView
             sessions={data.sessions}
             modes={data.modes}
+            dailyGoalMinutes={data.settings.dailyGoalMinutes}
+            activitySamples={data.activitySamples}
+            activityTrackingEnabled={data.settings.activityTracking?.enabled === true}
+            distractions={data.distractions}
+            onSaveModes={handleSaveModes}
             onDeleteSession={handleDeleteSession}
             onClearAllSessions={handleClearAllSessions}
             onBackToTasks={() => setActiveTab('tasks')}
@@ -1123,6 +1455,30 @@ export const App: React.FC = () => {
             onChangeTheme={setTheme}
           />
         )}
+
+        {/* Tab 9: LAN Control Rooms */}
+        {activeTab === 'rooms' && (
+          <RoomsView
+            theme={theme}
+            activeSession={activeSession}
+            onBackToTasks={() => setActiveTab('tasks')}
+          />
+        )}
+
+        {/* Notes */}
+        {activeTab === 'notes' && (
+          <NotesView
+            notes={data.notes || []}
+            noteFolders={data.noteFolders || []}
+            modes={data.modes}
+            obsidianConfig={data.settings.obsidian}
+            onSaveNotes={handleSaveNotes}
+            onSaveFolders={handleSaveNoteFolders}
+            onSaveNotesAndFolders={handleSaveNotesAndFolders}
+            onBackToTasks={() => setActiveTab('tasks')}
+            theme={theme}
+          />
+        )}
       </main>
 
       {/* Omni Spotlight Command Palette (Cmd+K) */}
@@ -1139,21 +1495,9 @@ export const App: React.FC = () => {
         }}
         onStartSession={handleStartSession}
         onAddTask={handleAddTask}
-        currentSound={currentSound}
-        onToggleSound={handleToggleSound}
       />
 
-      {/* Zen Ambient Soundscapes Control Popover */}
-      <AmbientSoundControl
-        isOpen={isSoundControlOpen}
-        onClose={() => setIsSoundControlOpen(false)}
-        currentSound={currentSound}
-        onSelectSound={handleToggleSound}
-        onStopSound={handleStopSound}
-        theme={theme}
-      />
-
-      {/* Instant Focus Exit / Reflection Modal */}
+      {/* Instant Control Exit / Reflection Modal */}
       <LeaveLockModal
         isOpen={isLeaveModalOpen}
         onClose={() => setIsLeaveModalOpen(false)}

@@ -6,19 +6,20 @@ export class GoogleCalendarService {
     blocks: ScheduleBlock[],
     config: GoogleCalendarConfig
   ): Promise<{ success: boolean; syncedCount: number; error?: string }> {
-    if (window.focusAPI) {
-      return await window.focusAPI.syncToGoogleCalendar(blocks, config);
+    if (window.controlAPI) {
+      return await window.controlAPI.syncToGoogleCalendar(blocks, config);
     }
 
     // In web fallback, simulate or offer direct ICS export
     console.log('Syncing blocks to Google Calendar (web fallback):', blocks);
     return {
-      success: true,
-      syncedCount: blocks.length,
+      success: false,
+      syncedCount: 0,
+      error: 'Google Calendar not connected in web preview — download .ics instead.',
     };
   }
 
-  downloadIcsFile(blocks: ScheduleBlock[], filename = 'focus-study-plan.ics') {
+  downloadIcsFile(blocks: ScheduleBlock[], filename = 'control-study-plan.ics') {
     const icsString = generateIcsContent(blocks);
     const blob = new Blob([icsString], { type: 'text/calendar;charset=utf-8' });
     const url = URL.createObjectURL(blob);

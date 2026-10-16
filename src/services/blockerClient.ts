@@ -17,9 +17,9 @@ class BlockerClient {
   };
 
   async startAppBlocking(apps: string[]): Promise<{ success: boolean; error?: string }> {
-    if (window.focusAPI) {
+    if (window.controlAPI) {
       try {
-        const res = await window.focusAPI.startAppBlocking(apps);
+        const res = await window.controlAPI.startAppBlocking(apps);
         await this.refreshAppStatus();
         return res;
       } catch (err: unknown) {
@@ -38,9 +38,9 @@ class BlockerClient {
   }
 
   async stopAppBlocking(): Promise<{ success: boolean; error?: string }> {
-    if (window.focusAPI) {
+    if (window.controlAPI) {
       try {
-        const res = await window.focusAPI.stopAppBlocking();
+        const res = await window.controlAPI.stopAppBlocking();
         await this.refreshAppStatus();
         return res;
       } catch (err: unknown) {
@@ -58,9 +58,9 @@ class BlockerClient {
   }
 
   async refreshAppStatus(): Promise<AppBlockerStatus> {
-    if (window.focusAPI) {
+    if (window.controlAPI) {
       try {
-        this.currentAppStatus = await window.focusAPI.getAppBlockerStatus();
+        this.currentAppStatus = await window.controlAPI.getAppBlockerStatus();
       } catch (err) {
         console.warn('Failed to get app blocker status:', err);
       }
@@ -74,12 +74,13 @@ class BlockerClient {
 
   async startBlocking(domains: string[], strategy: BlockingStrategy = 'dynamic_hosts'): Promise<{ success: boolean; error?: string }> {
     if (strategy === 'none' || domains.length === 0) {
-      return { success: true };
+      // Mirror main process: empty/off tears down instead of silent no-op.
+      return this.stopBlocking();
     }
 
-    if (window.focusAPI) {
+    if (window.controlAPI) {
       try {
-        const res = await window.focusAPI.startBlocking(domains, strategy);
+        const res = await window.controlAPI.startBlocking(domains, strategy);
         await this.refreshStatus();
         return res;
       } catch (err: unknown) {
@@ -100,9 +101,9 @@ class BlockerClient {
   }
 
   async stopBlocking(): Promise<{ success: boolean; error?: string }> {
-    if (window.focusAPI) {
+    if (window.controlAPI) {
       try {
-        const res = await window.focusAPI.stopBlocking();
+        const res = await window.controlAPI.stopBlocking();
         await this.refreshStatus();
         return res;
       } catch (err: unknown) {
@@ -121,9 +122,9 @@ class BlockerClient {
   }
 
   async refreshStatus(): Promise<BlockerStatus> {
-    if (window.focusAPI) {
+    if (window.controlAPI) {
       try {
-        this.currentStatus = await window.focusAPI.getBlockerStatus();
+        this.currentStatus = await window.controlAPI.getBlockerStatus();
       } catch (err) {
         console.warn('Failed to get blocker status:', err);
       }

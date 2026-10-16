@@ -5,12 +5,13 @@ import {
   Layers, FolderSync, CalendarCheck, Trash2, Link2Off, Zap, Bell
 } from 'lucide-react';
 import {
-  UserSettings, ThemeId, StudyMode, FocusAppData, TaskItem, ObsidianConfig,
+  UserSettings, ThemeId, StudyMode, ControlAppData, TaskItem, ObsidianConfig,
   GoogleCalendarConfig, GoogleCalendarOption, AutoExecuteConfig, AutoExecStatus,
   AutoExecOccurrence,
 } from '../types';
 import { THEMES } from '../styles/themes';
 import { sound } from '../services/sound';
+import { AuthPanel } from './AuthPanel';
 import { obsidianService, resolveTasksFolder } from '../services/obsidian';
 import { stripDateSuffix } from '../services/taskTitles';
 import { useGoogleSyncStatus } from '../services/googleSync';
@@ -21,7 +22,7 @@ interface SettingsViewProps {
   tasks?: TaskItem[];
   onSaveSettings: (settings: UserSettings) => void;
   onExportBackup: () => void;
-  onImportBackup: (data: FocusAppData) => void;
+  onImportBackup: (data: ControlAppData) => void;
   onBackToTasks: () => void;
   theme: ThemeId;
   onChangeTheme: (themeId: ThemeId) => void;
@@ -123,12 +124,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   };
   const [execStatus, setExecStatus] = useState<AutoExecStatus | null>(null);
   const loadExecStatus = useCallback(async () => {
-    if (!window.focusAPI?.autoExecGetStatus) return;
+    if (!window.controlAPI?.autoExecGetStatus) return;
     try {
-      const status = await window.focusAPI.autoExecGetStatus();
+      const status = await window.controlAPI.autoExecGetStatus();
       let supported = status.notificationsSupported;
       try {
-        supported = (await window.focusAPI.autoExecNotifyStatus()).supported;
+        supported = (await window.controlAPI.autoExecNotifyStatus()).supported;
       } catch {
         /* keep the scheduler-reported value */
       }
@@ -174,7 +175,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   };
 
   // ── Google Calendar sync controls ────────────────────────────────────────
-  const gcalApi = typeof window !== 'undefined' ? window.focusAPI?.googleCalendar : undefined;
+  const gcalApi = typeof window !== 'undefined' ? window.controlAPI?.googleCalendar : undefined;
   const googleStatus = useGoogleSyncStatus();
   const googleCalendarConfig: GoogleCalendarConfig = settings.googleCalendar || {
     connected: false,
@@ -442,7 +443,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         style={{ color: currentTheme.textPrimary }}
       />
       <p className="text-[10px] opacity-70" style={{ color: currentTheme.textSecondary }}>
-        Stored locally in ~/.focus-app/google-oauth.json (never leaves this Mac).
+        Stored locally in ~/.control-app/google-oauth.json (never leaves this Mac).
         A missing secret is the usual cause of “client_secret is missing” at sign-in — but
         Desktop-type OAuth clients don't need one at all.
       </p>
@@ -626,6 +627,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
         {/* Section 2: Personalization & Greeting */}
         <div className="p-6 rounded-3xl liquid-glass border space-y-4">
+          <span
+            className="font-bold text-sm"
+            style={{ color: currentTheme.textPrimary }}
+          >
+            Online Account — internet rooms
+          </span>
+          <AuthPanel
+            theme={theme}
+            displayName={settings.userName || ''}
+            onDisplayNameChange={(name) => handleUpdate({ userName: name })}
+            compact
+          />
+        </div>
+
+        {/* Section 2b: Personalization & Greeting */}
+        <div className="p-6 rounded-3xl liquid-glass border space-y-4">
           <span 
             className="font-bold text-sm"
             style={{ color: currentTheme.textPrimary }}
@@ -649,6 +666,38 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 className="w-full max-w-sm px-4 py-2.5 rounded-2xl liquid-glass-input text-sm outline-none"
                 style={{ color: currentTheme.textPrimary }}
               />
+            </div>
+
+            <div>
+              <label
+                className="block text-xs font-mono mb-1.5"
+                style={{ color: currentTheme.textSecondary }}
+              >
+                Daily Control Goal (minutes)
+              </label>
+              <div className="flex items-center gap-3">
+                <input
+                  type="number"
+                  min="15"
+                  max="720"
+                  step="15"
+                  value={settings.dailyGoalMinutes || 120}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10);
+                    if (Number.isFinite(v)) {
+                      handleUpdate({ dailyGoalMinutes: Math.min(720, Math.max(15, v)) });
+                    }
+                  }}
+                  className="w-28 px-4 py-2.5 rounded-2xl liquid-glass-input text-sm font-mono outline-none"
+                  style={{ color: currentTheme.textPrimary }}
+                />
+                <span
+                  className="text-[11px]"
+                  style={{ color: currentTheme.textSecondary }}
+                >
+                  Powers the goal ring in Tasks and the goal-based streak
+                </span>
+              </div>
             </div>
 
             <div
@@ -722,8 +771,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             onClick={() => {
               const newVal = !settings.launchAtLogin;
               handleUpdate({ launchAtLogin: newVal });
-              if (window.focusAPI) {
-                window.focusAPI.setLaunchAtLogin(newVal);
+              if (window.controlAPI) {
+                window.controlAPI.setLaunchAtLogin(newVal);
               }
             }}
           >
@@ -1048,7 +1097,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               className="font-bold text-sm"
               style={{ color: currentTheme.textPrimary }}
             >
-              Zen Audio & Acoustic Feedback
+              Audio & Acoustic Feedback
             </span>
           </div>
 
@@ -1068,7 +1117,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   className="text-[11px]"
                   style={{ color: currentTheme.textSecondary }}
                 >
-                  Synthesized harmonic Tibetan bowl on focus and break transitions
+                  Synthesized harmonic Tibetan bowl on control and break transitions
                 </span>
               </div>
               <input
@@ -1133,6 +1182,79 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 </div>
               </div>
             )}
+          </div>
+        </div>
+
+        {/* Section: Activity Tracking & Automations */}
+        <div className="p-6 rounded-3xl liquid-glass border space-y-4">
+          <span
+            className="font-bold text-sm"
+            style={{ color: currentTheme.textPrimary }}
+          >
+            Activity Tracking & Automations
+          </span>
+
+          <div className="space-y-3">
+            <div
+              className="p-4 rounded-2xl liquid-glass-card border flex items-center justify-between cursor-pointer"
+              onClick={() => handleUpdate({ activityTracking: { enabled: !(settings.activityTracking?.enabled === true) } })}
+            >
+              <div>
+                <span
+                  className="font-bold text-xs block"
+                  style={{ color: currentTheme.textPrimary }}
+                >
+                  Track Active Apps
+                </span>
+                <span
+                  className="text-[11px]"
+                  style={{ color: currentTheme.textSecondary }}
+                >
+                  Samples the frontmost app every 30s, on this Mac only. May ask for Automation permission once.
+                </span>
+              </div>
+              <input
+                type="checkbox"
+                checked={settings.activityTracking?.enabled === true}
+                onChange={() => {}}
+                className="accent-sky-500 w-4 h-4 cursor-pointer"
+              />
+            </div>
+
+            <div className="p-4 rounded-2xl liquid-glass-card border space-y-2">
+              <span
+                className="font-bold text-xs block font-mono"
+                style={{ color: currentTheme.textPrimary }}
+              >
+                control://control?mode=&lt;mode&gt;&amp;task=&lt;text&gt;
+              </span>
+              <span
+                className="text-[11px] leading-relaxed block"
+                style={{ color: currentTheme.textSecondary }}
+              >
+                Start a control session from anywhere: Shortcuts.app (Open URLs action), Raycast,
+                Alfred, or the terminal with <span className="font-mono">open "control://control?mode=Deep Work&amp;task=Read ch.5"</span>.
+                Mode accepts an id or a name. Requires the installed app build.
+              </span>
+            </div>
+
+            <div className="p-4 rounded-2xl liquid-glass-card border space-y-2">
+              <span
+                className="font-bold text-xs block font-mono"
+                style={{ color: currentTheme.textPrimary }}
+              >
+                Quick Note — global shortcut + menu bar
+              </span>
+              <span
+                className="text-[11px] leading-relaxed block"
+                style={{ color: currentTheme.textSecondary }}
+              >
+                Press <span className="font-mono">⌘⇧N</span> from any app (falls back to{' '}
+                <span className="font-mono">⌥⇧N</span> if taken) or choose Quick Note… in the
+                menu-bar icon. Captures file into your current task and mode automatically —
+                link a notes folder to a mode to auto-file them.
+              </span>
+            </div>
           </div>
         </div>
 
@@ -1348,7 +1470,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
                 <div className="flex items-end">
                   <label className="flex items-center justify-between w-full px-1 pb-1.5 text-[11px] cursor-pointer" style={{ color: currentTheme.textPrimary }}>
-                    <span>Background auto-sync (every 5 min, on focus &amp; edits)</span>
+                    <span>Background auto-sync (every 5 min, on control &amp; edits)</span>
                     <input
                       type="checkbox"
                       checked={googleCalendarConfig.autoSync !== false}
@@ -1573,7 +1695,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
         </div>
 
-        {/* Section 7: Automatic Focus Execution */}
+        {/* Section 7: Automatic Control Execution */}
         <div className="p-6 rounded-3xl liquid-glass border space-y-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-2.5">
@@ -1583,14 +1705,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <div>
                 <div className="flex items-center space-x-2">
                   <span className="font-bold text-sm" style={{ color: currentTheme.textPrimary }}>
-                    Automatic Focus Execution
+                    Automatic Control Execution
                   </span>
                   <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 font-bold border border-amber-500/30">
                     Scheduler
                   </span>
                 </div>
                 <p className="text-xs font-medium mt-0.5" style={{ color: currentTheme.textSecondary }}>
-                  Remind before each planned session and start its focus timer automatically
+                  Remind before each planned session and start its control timer automatically
                 </p>
               </div>
             </div>

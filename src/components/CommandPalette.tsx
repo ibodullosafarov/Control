@@ -1,12 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { 
-  Search, CheckSquare, Timer, Shield, Calendar, Sliders, BarChart3, Settings, 
-  Moon, Sun, Play, Plus, Volume2, Sparkles, X, ArrowRight, Music
+import {
+  Search, CheckSquare, Timer, Shield, Calendar, Sliders, BarChart3, Settings,
+  Moon, Sun, Play, Plus, Volume2, Sparkles, X, ArrowRight, Users, StickyNote
 } from 'lucide-react';
 import { StudyMode, TaskItem, ThemeId } from '../types';
 import { THEMES } from '../styles/themes';
 import { NavTab } from './Header';
-import { AMBIENT_SOUNDS, AmbientSoundType, ambientAudio } from '../services/ambientAudio';
 
 interface CommandPaletteProps {
   isOpen: boolean;
@@ -18,13 +17,11 @@ interface CommandPaletteProps {
   onChangeTheme: (themeId: ThemeId) => void;
   onStartSession: (mode: StudyMode, taskIds: string[]) => void;
   onAddTask: (title: string) => TaskItem;
-  currentSound: AmbientSoundType | null;
-  onToggleSound: (type: AmbientSoundType) => void;
 }
 
 interface PaletteItem {
   id: string;
-  category: 'Modes' | 'Navigation' | 'Themes' | 'Tasks' | 'Audio' | 'Actions';
+  category: 'Modes' | 'Navigation' | 'Themes' | 'Tasks' | 'Actions';
   title: string;
   subtitle?: string;
   icon: React.ReactNode;
@@ -42,8 +39,6 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   onChangeTheme,
   onStartSession,
   onAddTask,
-  currentSound,
-  onToggleSound,
 }) => {
   const currentTheme = THEMES[theme] || THEMES.serika;
   const isDark = currentTheme.isDark;
@@ -66,8 +61,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     {
       id: 'nav-tasks',
       category: 'Navigation',
-      title: 'Go to Tasks & Focus Studio',
-      subtitle: 'Primary task queue & focus launchpad [1]',
+      title: 'Go to Tasks & Control Studio',
+      subtitle: 'Primary task queue & control launchpad [1]',
       icon: <CheckSquare className="w-4 h-4 text-sky-500" />,
       action: () => { onSelectTab('tasks'); onClose(); },
       badge: '⌘1',
@@ -75,7 +70,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     {
       id: 'nav-timer',
       category: 'Navigation',
-      title: 'Go to Focus Timer',
+      title: 'Go to Control Timer',
       subtitle: 'Active session countdown & controls [2]',
       icon: <Timer className="w-4 h-4 text-emerald-500" />,
       action: () => { onSelectTab('timer'); onClose(); },
@@ -121,10 +116,28 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       id: 'nav-settings',
       category: 'Navigation',
       title: 'Go to Preferences & Appearance',
-      subtitle: 'Liquid glass themes, audio cues & backup [7]',
+      subtitle: 'Liquid glass themes, audio cues & backup [9]',
       icon: <Settings className="w-4 h-4 text-zinc-400" />,
       action: () => { onSelectTab('settings'); onClose(); },
+      badge: '⌘9',
+    },
+    {
+      id: 'nav-rooms',
+      category: 'Navigation',
+      title: 'Go to Control Rooms',
+      subtitle: 'Study together over local Wi-Fi [7]',
+      icon: <Users className="w-4 h-4 text-orange-500" />,
+      action: () => { onSelectTab('rooms'); onClose(); },
       badge: '⌘7',
+    },
+    {
+      id: 'nav-notes',
+      category: 'Navigation',
+      title: 'Go to Notes',
+      subtitle: 'Quick captures filed by task & mode [8]',
+      icon: <StickyNote className="w-4 h-4 text-amber-500" />,
+      action: () => { onSelectTab('notes'); onClose(); },
+      badge: '⌘8',
     },
 
     // 2. Study Modes Quick Launch
@@ -132,7 +145,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       id: `mode-${m.id}`,
       category: 'Modes' as const,
       title: `Start ${m.name}`,
-      subtitle: `${m.workDuration}m Focus · ${m.cycles} Cycles · ${m.breakDuration}m Rest`,
+      subtitle: `${m.workDuration}m Control · ${m.breakDuration}m Rest`,
       icon: <Play className="w-4 h-4 text-emerald-500 fill-current" />,
       action: () => {
         const uncompleted = tasks.filter((t) => !t.completed);
@@ -143,21 +156,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       badge: 'Launch',
     })),
 
-    // 3. Ambient Audio Soundscapes
-    ...AMBIENT_SOUNDS.map((s) => ({
-      id: `sound-${s.id}`,
-      category: 'Audio' as const,
-      title: `${s.emoji} ${s.name}`,
-      subtitle: s.description,
-      icon: <Music className="w-4 h-4 text-sky-500" />,
-      action: () => {
-        onToggleSound(s.id);
-        onClose();
-      },
-      badge: currentSound === s.id ? 'Playing (Click to stop)' : 'Play Soundscape',
-    })),
-
-    // 4. Themes
+    // 3. Themes
     ...Object.values(THEMES).map((t) => ({
       id: `theme-${t.id}`,
       category: 'Themes' as const,
@@ -175,8 +174,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     ...tasks.filter((t) => !t.completed).map((t) => ({
       id: `task-${t.id}`,
       category: 'Tasks' as const,
-      title: `Focus on: ${t.title}`,
-      subtitle: 'Launch with current default focus mode',
+      title: `Control on: ${t.title}`,
+      subtitle: 'Launch with current default control mode',
       icon: <CheckSquare className="w-4 h-4 text-sky-500" />,
       action: () => {
         onStartSession(modes[0], [t.id]);
@@ -234,7 +233,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       {/* Backdrop */}
       <div 
         onClick={onClose}
-        className="absolute inset-0 bg-black/70 transition-opacity duration-200"
+        className="absolute inset-0 bg-transparent transition-opacity duration-200"
       />
 
       {/* Palette Card */}
@@ -299,13 +298,13 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                     className="text-sm font-bold block"
                     style={{ color: currentTheme.textPrimary }}
                   >
-                    Create & Focus: "{query.trim()}"
+                    Create & Control: "{query.trim()}"
                   </span>
                   <span 
                     className="text-xs"
                     style={{ color: currentTheme.textSecondary }}
                   >
-                    Add new task and start focus session immediately
+                    Add new task and start control session immediately
                   </span>
                 </div>
               </div>
@@ -399,7 +398,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
             <span>·</span>
             <span>ESC Close</span>
           </div>
-          <span>Focus Spotlight</span>
+          <span>Control Spotlight</span>
         </div>
       </div>
     </div>

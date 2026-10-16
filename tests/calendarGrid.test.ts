@@ -390,7 +390,7 @@ describe('makeCopy', () => {
       createdAt: '2020-01-01T00:00:00.000Z',
       updatedAt: '2020-01-01T00:00:00.000Z',
       originTemplate: 'Daily SAT',
-      focusMode: false,
+      controlMode: false,
     });
     const copy = makeCopy(src, '2026-10-13', '14:00', '15:00', () => 'copy-1');
     expect(copy.id).toBe('copy-1');
@@ -401,7 +401,7 @@ describe('makeCopy', () => {
     expect(copy.source).toBe('control');
     // Template prefs travel; sync linkage must not.
     expect(copy.originTemplate).toBe('Daily SAT');
-    expect(copy.focusMode).toBe(false);
+    expect(copy.controlMode).toBe(false);
     expect(copy.googleCalendarEventId).toBeUndefined();
     expect(copy.googleEventETag).toBeUndefined();
     expect(copy.googleCalendarId).toBeUndefined();

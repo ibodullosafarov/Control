@@ -78,7 +78,7 @@ export const AbsoluteScheduleModal: React.FC<AbsoluteScheduleModalProps> = ({
     );
   }, [template, date, variables, modeOverrides, timeOverrides, modes, plans]);
 
-  // Single-block modes should match their focus length; multi-cycle exempt.
+  // Single-block modes should match their control length; multi-cycle exempt.
   const mismatches = useMemo(
     () => validateSingleBlockDurations(result.blocks, modes),
     [result.blocks, modes]
@@ -96,7 +96,7 @@ export const AbsoluteScheduleModal: React.FC<AbsoluteScheduleModalProps> = ({
       [task.order]: {
         ...(prev[task.order] || {}),
         start: block.startTime,
-        end: formatMinutes(mm + mismatch.focusMinutes),
+        end: formatMinutes(mm + mismatch.controlMinutes),
       },
     }));
   };
@@ -142,7 +142,7 @@ export const AbsoluteScheduleModal: React.FC<AbsoluteScheduleModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/65 backdrop-blur-sm" onClick={() => !isSubmitting && onClose()} />
+      <div className="absolute inset-0 bg-transparent" onClick={() => !isSubmitting && onClose()} />
       <div
         className="relative w-full max-w-2xl max-h-[88vh] overflow-y-auto p-6 rounded-3xl liquid-glass border space-y-4 animate-modal-in"
         style={{ borderColor: border }}
@@ -169,7 +169,7 @@ export const AbsoluteScheduleModal: React.FC<AbsoluteScheduleModalProps> = ({
 
         {modes.length === 0 && (
           <div className="p-4 rounded-2xl border border-rose-500/30 bg-rose-500/10 text-[11px] text-rose-400">
-            No focus modes are defined — create one before applying a template.
+            No control modes are defined — create one before applying a template.
           </div>
         )}
 
@@ -368,24 +368,24 @@ export const AbsoluteScheduleModal: React.FC<AbsoluteScheduleModalProps> = ({
           <div className="p-4 rounded-2xl border border-amber-500/30 bg-amber-500/10 space-y-2">
             <div className="flex items-center space-x-2 text-xs font-bold text-amber-500">
               <AlertTriangle className="w-4 h-4" />
-              <span>Event length differs from focus length</span>
+              <span>Event length differs from control length</span>
             </div>
             {mismatches.map((m) => (
               <div key={m.index} className="flex items-center justify-between gap-2 text-[11px]">
                 <p className="leading-relaxed" style={{ color: currentTheme.textSecondary }}>
                   “{m.title}” is scheduled {m.eventMinutes}m, but single-block mode {m.modeName}{' '}
-                  focuses {m.focusMinutes}m. Fix the time above, change the mode, or snap:
+                  controls {m.controlMinutes}m. Fix the time above, change the mode, or snap:
                 </p>
                 <button
                   onClick={() => snapMismatch(m.index)}
                   className="px-2.5 py-1 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-500 text-[11px] font-bold hover:bg-amber-500/30 transition-all cursor-pointer shrink-0"
                 >
-                  Snap to {m.focusMinutes}m
+                  Snap to {m.controlMinutes}m
                 </button>
               </div>
             ))}
             <p className="text-[10px] opacity-70" style={{ color: currentTheme.textSecondary }}>
-              Single-block modes run one focus cycle, so the event should match. Multi-cycle modes
+              Single-block modes run one control cycle, so the event should match. Multi-cycle modes
               are never flagged. Nothing is stretched automatically.
             </p>
           </div>
@@ -491,6 +491,7 @@ export const AbsoluteScheduleModal: React.FC<AbsoluteScheduleModalProps> = ({
         <p className="text-[10px] opacity-60 text-center" style={{ color: currentTheme.textSecondary }}>
           <CheckCircle2 className="w-3 h-3 inline mr-1" />
           Events become ordinary Day Planner entries — editable, startable, and synced like any other.
+          Events never start by themselves unless Automatic Control Execution is on in Settings.
         </p>
       </div>
     </div>

@@ -54,9 +54,12 @@ describe('contentHash', () => {
     expect(contentHash(makeBlock('b1', '2026-10-11'))).not.toBe(base);
   });
 
-  it('ignores fields Control does not mirror', () => {
+  it('ignores fields Control does not mirror (but tracks timer fields)', () => {
     const base = contentHash(makeBlock('b1', '2026-10-10'));
-    expect(contentHash(makeBlock('b1', '2026-10-10', { status: 'completed', cycles: 9 }))).toBe(base);
+    expect(contentHash(makeBlock('b1', '2026-10-10', { status: 'completed' }))).toBe(base);
+    // Timer fields are mirrored as private props — must change the hash.
+    expect(contentHash(makeBlock('b1', '2026-10-10', { cycles: 9 }))).not.toBe(base);
+    expect(contentHash(makeBlock('b1', '2026-10-10', { workDuration: 25 }))).not.toBe(base);
   });
 
   it('managedFields normalizes missing optional strings', () => {
@@ -230,6 +233,33 @@ describe('googleEventToBlock', () => {
     expect(block.id).toBe('gcal-g9');
     expect(block.modeId).toBe('m');
     expect(block.modeName).toBe('Team lunch');
+  });
+
+  it('B-21: fresh timed imports default to the honest single (work = length, no break)', () => {
+    const event: GoogleEventResource = {
+      id: 'g-fresh',
+      summary: 'SAT hw',
+      start: { dateTime: localDateTime('2026-03-10', '12:30').toISOString() },
+      end: { dateTime: localDateTime('2026-03-10', '13:00').toISOString() },
+    };
+    const block = googleEventToBlock(event, { defaultMode: null });
+    expect(block.cycles).toBe(1);
+    expect(block.workDuration).toBe(30);
+    expect(block.breakDuration).toBe(0);
+  });
+
+  it('B-21: Control-pushed events keep their private timer props on re-import', () => {
+    const event: GoogleEventResource = {
+      id: 'g-own',
+      summary: 'Math',
+      start: { dateTime: localDateTime('2026-03-10', '12:30').toISOString() },
+      end: { dateTime: localDateTime('2026-03-10', '13:00').toISOString() },
+      extendedProperties: { private: { controlWork: '50', controlBreak: '10', controlCycles: '3' } },
+    };
+    const block = googleEventToBlock(event, { defaultMode: null });
+    expect(block.workDuration).toBe(50);
+    expect(block.breakDuration).toBe(10);
+    expect(block.cycles).toBe(3);
   });
 });
 

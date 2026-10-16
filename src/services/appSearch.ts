@@ -8,9 +8,9 @@ export interface BlockSearchResult {
 
 // Suggest matching installed macOS applications from the Electron main process.
 export async function searchApps(query: string): Promise<InstalledAppInfo[]> {
-  if (!window.focusAPI?.searchInstalledApps) return [];
+  if (!window.controlAPI?.searchInstalledApps) return [];
   try {
-    return await window.focusAPI.searchInstalledApps(query);
+    return await window.controlAPI.searchInstalledApps(query);
   } catch (err) {
     console.warn('App search failed:', err);
     return [];

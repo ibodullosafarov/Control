@@ -36,10 +36,11 @@ export function managedFields(block: ScheduleBlock): ManagedBlockFields {
   };
 }
 
-/** Stable hash over the fields Control mirrors to Google. */
+/** Stable hash over the fields Control mirrors to Google (v2: includes timer fields). */
 export function contentHash(block: ScheduleBlock): string {
   const f = managedFields(block);
   const input = [
+    'v2',
     f.title,
     f.date,
     f.startTime,
@@ -47,6 +48,10 @@ export function contentHash(block: ScheduleBlock): string {
     f.allDay ? '1' : '0',
     f.description,
     f.location,
+    block.modeId || '',
+    String(block.cycles ?? ''),
+    String(block.workDuration ?? ''),
+    String(block.breakDuration ?? ''),
   ].join('\u0001');
   let h = 5381;
   for (let i = 0; i < input.length; i++) {
@@ -123,9 +128,16 @@ export function blockToGoogleBody(block: ScheduleBlock, opts: BlockToEventOption
     end = { date: exclusiveEnd };
   } else {
     const startDt = localDateTime(block.date, block.startTime);
-    let endDt = localDateTime(block.date, block.endTime);
-    if (endDt.getTime() <= startDt.getTime()) {
-      endDt = new Date(startDt.getTime() + 60 * 60 * 1000);
+    let endDt: Date;
+    if (block.googleEnd && !block.allDay) {
+      const parsed = new Date(block.googleEnd);
+      endDt = !isNaN(parsed.getTime()) && parsed.getTime() > startDt.getTime() ? parsed : localDateTime(block.date, block.endTime);
+      if (endDt.getTime() <= startDt.getTime()) endDt = new Date(startDt.getTime() + 60 * 60 * 1000);
+    } else {
+      endDt = localDateTime(block.date, block.endTime);
+      if (endDt.getTime() <= startDt.getTime()) {
+        endDt = new Date(startDt.getTime() + 60 * 60 * 1000);
+      }
     }
     start = { dateTime: startDt.toISOString(), timeZone: opts.timeZone };
     end = { dateTime: endDt.toISOString(), timeZone: opts.timeZone };
@@ -226,6 +238,15 @@ function num(v: string | undefined, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+/** Wall minutes between two HH:mm stamps, or null when unparseable. */
+function wallMinutes(startTime: string, endTime: string): number | null {
+  const m1 = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(startTime || '');
+  const m2 = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(endTime || '');
+  if (!m1 || !m2) return null;
+  const wall = Number(m2[1]) * 60 + Number(m2[2]) - (Number(m1[1]) * 60 + Number(m1[2]));
+  return wall > 0 ? wall : null;
+}
+
 /**
  * Build the ScheduleBlock for a Google event.
  *
@@ -243,6 +264,8 @@ export function googleEventToBlock(event: GoogleEventResource, opts: GoogleToBlo
   let endTime = '23:59';
   let googleEnd: string | undefined;
   let googleStartRaw: string | undefined;
+  const warnings: string[] = [];
+  if (allDay) warnings.push('All-day event imported as 00:00–23:59 — edit to your control time.');
 
   if (allDay) {
     date = event.start?.date || fmtLocalDate(new Date());
@@ -262,11 +285,14 @@ export function googleEventToBlock(event: GoogleEventResource, opts: GoogleToBlo
       if (!sameDay) {
         // Overnight event: keep the true raw end for lossless round trips.
         googleEnd = endDt.toISOString();
+        warnings.push('Overnight event — showing rest of today; true end preserved.');
       } else if (endDt.getTime() <= safeStart.getTime()) {
         endTime = fmtLocalTime(new Date(safeStart.getTime() + 60 * 60 * 1000));
+        warnings.push('End was at/before start — extended by 1h. Check times.');
       }
     } else {
       endTime = fmtLocalTime(new Date(safeStart.getTime() + 60 * 60 * 1000));
+      warnings.push('Missing end time — defaulted to 1h. Check times.');
     }
     googleStartRaw = event.start?.dateTime;
   }
@@ -275,13 +301,26 @@ export function googleEventToBlock(event: GoogleEventResource, opts: GoogleToBlo
     controlTitleOf(event) || event.summary || existing?.modeName || opts.defaultMode?.name || 'Imported event';
   const modeId = privateProps.controlModeId || existing?.modeId || opts.defaultMode?.id || '';
   const cycles = privateProps.controlCycles ? num(privateProps.controlCycles, 1) : existing?.cycles ?? 1;
-  const workDuration = privateProps.controlWork
+  let workDuration = privateProps.controlWork
     ? num(privateProps.controlWork, 60)
     : existing?.workDuration ?? 60;
-  const breakDuration = privateProps.controlBreak
+  let breakDuration = privateProps.controlBreak
     ? num(privateProps.controlBreak, 10)
     : existing?.breakDuration ?? 10;
+  if (!privateProps.controlWork && !privateProps.controlBreak && !existing && !allDay) {
+    // B-21: fresh imports defaulted to 60 work / 10 break regardless of
+    // length — a 30-min meeting played as a 60-min timer. Default to the
+    // honest single instead: work = event length, no break. (Control-pushed
+    // events carry private timer props and all-day events keep the old
+    // defaults, so round-trips and all-day behavior are unchanged.)
+    const wall = wallMinutes(startTime, endTime);
+    if (wall !== null) {
+      workDuration = wall;
+      breakDuration = 0;
+    }
+  }
 
+  // Overnight / repaired ends are flagged (S-15), never silent.
   const block: ScheduleBlock = {
     id: existing?.id || controlBlockIdOf(event) || `gcal-${event.id}`,
     date,
@@ -300,6 +339,7 @@ export function googleEventToBlock(event: GoogleEventResource, opts: GoogleToBlo
     googleCalendarEventId: event.id,
     googleEventETag: event.etag,
     googleStatus: event.status || 'confirmed',
+    ...(warnings.length > 0 ? { importWarning: warnings.join(' ') } : {}),
   };
 
   if (event.description) block.description = event.description;

@@ -1,12 +1,20 @@
-import React from 'react';
-import { Clock, CheckCircle2, Flame, ArrowLeft, Trash2, Calendar, Sparkles } from 'lucide-react';
-import { FocusSession, StudyMode, ThemeId } from '../types';
+import React, { useState } from 'react';
+import { Clock, CheckCircle2, Flame, ArrowLeft, Trash2, Calendar, Sparkles, MonitorSmartphone, ShieldAlert } from 'lucide-react';
+import { ActivitySample, DistractionEvent, ControlSession, StudyMode, TaskItem, ThemeId } from '../types';
 import { THEMES } from '../styles/themes';
 import { DynamicIcon } from './DynamicIcon';
+import { computeStreak, computeWeeklyDigest, localDayKey } from '../services/progress';
+import { attributeApp, timelineByDay, usageByApp } from '../services/activity';
 
 interface HistoryViewProps {
-  sessions: FocusSession[];
+  sessions: ControlSession[];
   modes: StudyMode[];
+  tasks?: TaskItem[];
+  dailyGoalMinutes?: number;
+  activitySamples?: ActivitySample[];
+  activityTrackingEnabled?: boolean;
+  distractions?: DistractionEvent[];
+  onSaveModes?: (modes: StudyMode[]) => void;
   onDeleteSession: (sessionId: string) => void;
   onClearAllSessions: () => void;
   onBackToTasks: () => void;
@@ -16,6 +24,12 @@ interface HistoryViewProps {
 export const HistoryView: React.FC<HistoryViewProps> = ({
   sessions,
   modes,
+  tasks = [],
+  dailyGoalMinutes,
+  activitySamples,
+  activityTrackingEnabled,
+  distractions,
+  onSaveModes,
   onDeleteSession,
   onClearAllSessions,
   onBackToTasks,
@@ -23,14 +37,15 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
 }) => {
   const currentTheme = THEMES[theme] || THEMES.serika;
   const isDark = currentTheme.isDark;
+  const goalMinutes = dailyGoalMinutes && dailyGoalMinutes > 0 ? dailyGoalMinutes : 120;
 
-  const validSessions = sessions.filter((s) => s.countTowardStats && s.status === 'completed');
+  const validSessions = sessions.filter((s) => s.countTowardStats && (s.status === 'completed' || s.status === 'cancelled'));
 
   const totalMinutesAllTime = validSessions.reduce((acc, s) => acc + (s.actualWorkMinutes || 0), 0);
 
-  const todayDateStr = new Date().toISOString().split('T')[0];
+  const todayDateStr = localDayKey(new Date());
   const todayMinutes = validSessions
-    .filter((s) => s.startTime.startsWith(todayDateStr))
+    .filter((s) => localDayKey(new Date(s.startTime)) === todayDateStr)
     .reduce((acc, s) => acc + (s.actualWorkMinutes || 0), 0);
 
   const sevenDaysAgo = new Date();
@@ -39,30 +54,60 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
     .filter((s) => new Date(s.startTime) >= sevenDaysAgo)
     .reduce((acc, s) => acc + (s.actualWorkMinutes || 0), 0);
 
-  // Compute Streak
-  const daysWithSessions = new Set(
-    validSessions.map((s) => s.startTime.split('T')[0])
-  );
-  let streak = 0;
-  const checkDate = new Date();
-  while (true) {
-    const dStr = checkDate.toISOString().split('T')[0];
-    if (daysWithSessions.has(dStr)) {
-      streak++;
-      checkDate.setDate(checkDate.getDate() - 1);
+  // Goal-based streak: consecutive days meeting the daily control goal.
+  const streak = computeStreak(validSessions, goalMinutes);
+
+  // Monday-to-Sunday review of the current week.
+  const digest = computeWeeklyDigest(validSessions);
+
+  // ── App activity (optional frontmost-app tracker) ──────────────────────
+  const samples = activitySamples || [];
+  const todayKey = localDayKey(new Date());
+  const todayTimeline = timelineByDay(samples, todayKey);
+  const todayUsage = usageByApp(samples, todayKey);
+  const todayTrackedMins = todayUsage.reduce((acc, u) => acc + u.minutes, 0);
+  // Compress the per-minute timeline into same-app runs for one clean strip.
+  const todayRuns: { app: string; start: string; end: string; minutes: number }[] = [];
+  for (const b of todayTimeline) {
+    const last = todayRuns[todayRuns.length - 1];
+    if (last && last.app === b.app) {
+      last.end = b.start;
+      last.minutes += 1;
     } else {
-      if (streak === 0) {
-        checkDate.setDate(checkDate.getDate() - 1);
-        const yStr = checkDate.toISOString().split('T')[0];
-        if (daysWithSessions.has(yStr)) {
-          streak++;
-          checkDate.setDate(checkDate.getDate() - 1);
-          continue;
-        }
-      }
-      break;
+      todayRuns.push({ app: b.app, start: b.start, end: b.start, minutes: 1 });
     }
   }
+  const appHue = (app: string) => {
+    let h = 0;
+    for (let i = 0; i < app.length; i++) h = (h * 31 + app.charCodeAt(i)) % 360;
+    return h;
+  };
+
+  // ── Distraction autopsy (past 7 days) ──────────────────────────────────
+  const weekAgoMs = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const recentDistractions = (distractions || []).filter((d) => d.t >= weekAgoMs);
+  const offenders = (() => {
+    const map = new Map<string, { name: string; count: number; lastT: number; modeId?: string; modeName?: string }>();
+    for (const d of recentDistractions) {
+      const entry = map.get(d.name) || { name: d.name, count: 0, lastT: 0 };
+      entry.count += 1;
+      if (d.t >= entry.lastT) {
+        entry.lastT = d.t;
+        entry.modeId = d.modeId;
+        entry.modeName = d.modeName;
+      }
+      map.set(d.name, entry);
+    }
+    return Array.from(map.values()).sort((a, b) => b.count - a.count).slice(0, 8);
+  })();
+  const [blockTargets, setBlockTargets] = useState<Record<string, string>>({});
+  const timeAgo = (t: number) => {
+    const mins = Math.max(1, Math.round((Date.now() - t) / 60000));
+    if (mins < 60) return `${mins}m ago`;
+    const h = Math.floor(mins / 60);
+    if (h < 24) return `${h}h ago`;
+    return `${Math.floor(h / 24)}d ago`;
+  };
 
   // Format Hours & Minutes
   const formatHoursMins = (mins: number) => {
@@ -72,7 +117,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
     return `${h}h ${m}m`;
   };
 
-  // ── Focus Insights ────────────────────────────────────────────────────────
+  // ── Control Insights ────────────────────────────────────────────────────────
   const hourMap = new Map<number, number>();
   const weekdayMap = new Map<number, number>();
   let longestUnbroken = 0;
@@ -127,7 +172,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
 
   if (totalMinutesAllTime > 0 && bestHour !== null) {
     insights.push({
-      title: `Peak Focus Hour — ${formatHour(bestHour)}`,
+      title: `Peak Control Hour — ${formatHour(bestHour)}`,
       body: `${formatHoursMins(bestHourMinutes)} of deep work accumulated in this hour across your history.`,
       accent: 'text-sky-500',
     });
@@ -135,7 +180,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
   if (bestWeekday !== null) {
     insights.push({
       title: `Strongest Day — ${WEEKDAYS[bestWeekday]}`,
-      body: `${formatHoursMins(bestWeekdayMinutes)} of focus logged on this weekday. Plan high-stakes work then.`,
+      body: `${formatHoursMins(bestWeekdayMinutes)} of control logged on this weekday. Plan high-stakes work then.`,
       accent: 'text-violet-500',
     });
   }
@@ -149,7 +194,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
   if (volumeDipped) {
     insights.push({
       title: 'Volume Took a Dip',
-      body: `Focus in the past 7 days is under half of the prior week. It’s normal to ebb — protect tomorrow with a small session.`,
+      body: `Control in the past 7 days is under half of the prior week. It’s normal to ebb — protect tomorrow with a small session.`,
       accent: 'text-amber-500',
     });
   }
@@ -175,7 +220,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
               className="text-2xl font-bold tracking-tight"
               style={{ color: currentTheme.textPrimary }}
             >
-              Analytics & Focus History
+              Analytics & Control History
             </h1>
             <p 
               className="text-xs font-medium mt-0.5"
@@ -210,16 +255,29 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
             className="text-xs font-mono uppercase tracking-wider font-semibold block"
             style={{ color: currentTheme.textSecondary }}
           >
-            Today's Focus
+            Today's Control
           </span>
           <div className="text-3xl font-bold text-sky-500 font-mono tracking-tight">
             {formatHoursMins(todayMinutes)}
           </div>
-          <span 
+          <div
+            className="h-1.5 rounded-full overflow-hidden"
+            style={{ backgroundColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)' }}
+            title={`${todayMinutes} of ${goalMinutes}m daily goal`}
+          >
+            <div
+              className="h-full rounded-full"
+              style={{
+                width: `${Math.min(100, Math.round((todayMinutes / goalMinutes) * 100))}%`,
+                backgroundColor: '#38bdf8',
+              }}
+            />
+          </div>
+          <span
             className="text-[11px] block"
             style={{ color: currentTheme.textMuted }}
           >
-            Completed today
+            {todayMinutes >= goalMinutes ? 'Daily goal met' : `${goalMinutes - todayMinutes}m to daily goal`}
           </span>
         </div>
 
@@ -273,16 +331,81 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
             <Flame className="w-6 h-6 fill-current text-amber-500" />
             <span>{streak} {streak === 1 ? 'Day' : 'Days'}</span>
           </div>
-          <span 
+          <span
             className="text-[11px] block"
             style={{ color: currentTheme.textMuted }}
           >
-            Consecutive study streak
+            Consecutive {goalMinutes}m-goal days
           </span>
         </div>
       </div>
 
-      {/* Focus Insights */}
+      {/* Weekly Review Digest */}
+      {validSessions.length > 0 && (
+        <div className="p-6 rounded-3xl liquid-glass border space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <Calendar className="w-4 h-4 text-violet-500" />
+              <span
+                className="font-bold text-sm"
+                style={{ color: currentTheme.textPrimary }}
+              >
+                This Week
+              </span>
+            </div>
+            {digest.deltaPct !== null && (
+              <span
+                className={`text-[11px] font-mono font-bold px-2 py-0.5 rounded-full ${
+                  digest.deltaPct >= 0
+                    ? 'bg-emerald-500/15 text-emerald-500'
+                    : 'bg-amber-500/15 text-amber-500'
+                }`}
+              >
+                {digest.deltaPct >= 0 ? '+' : ''}{digest.deltaPct}% vs last week
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-end space-x-2">
+            <span className="text-4xl font-bold font-mono tracking-tight text-violet-500">
+              {formatHoursMins(digest.weekMinutes)}
+            </span>
+            <span
+              className="text-[11px] font-mono pb-1.5"
+              style={{ color: currentTheme.textMuted }}
+            >
+              {digest.sessionsCount} {digest.sessionsCount === 1 ? 'session' : 'sessions'} · {digest.activeDays}/7 days
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+            {[
+              { label: 'Tasks done', value: String(digest.tasksCompleted) },
+              { label: 'Daily avg', value: formatHoursMins(digest.dailyAvg) },
+              { label: 'Best day', value: digest.bestDay ? `${digest.bestDay.name.split(' ')[0]} · ${formatHoursMins(digest.bestDay.minutes)}` : '—' },
+              { label: 'Top mode', value: digest.topMode ? `${digest.topMode.name} · ${formatHoursMins(digest.topMode.minutes)}` : '—' },
+            ].map((stat) => (
+              <div key={stat.label} className="p-3 rounded-2xl liquid-glass-card border space-y-0.5">
+                <span
+                  className="text-[10px] font-mono uppercase tracking-wider font-semibold block"
+                  style={{ color: currentTheme.textSecondary }}
+                >
+                  {stat.label}
+                </span>
+                <span
+                  className="text-sm font-bold block truncate"
+                  style={{ color: currentTheme.textPrimary }}
+                  title={stat.value}
+                >
+                  {stat.value}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Control Insights */}
       {insights.length > 0 && (
         <div className="p-6 rounded-3xl liquid-glass border space-y-4">
           <div className="flex items-center space-x-2">
@@ -291,7 +414,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
               className="font-bold text-sm"
               style={{ color: currentTheme.textPrimary }}
             >
-              Focus Insights
+              Control Insights
             </span>
           </div>
 
@@ -312,6 +435,160 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* App Activity (automatic time tracking) */}
+      <div className="p-6 rounded-3xl liquid-glass border space-y-4">
+        <div className="flex items-center space-x-2">
+          <MonitorSmartphone className="w-4 h-4 text-sky-500" />
+          <span className="font-bold text-sm" style={{ color: currentTheme.textPrimary }}>
+            App Activity
+          </span>
+          <span className="text-[11px] font-mono" style={{ color: currentTheme.textMuted }}>
+            {activityTrackingEnabled ? 'tracking on' : 'tracking off'}
+          </span>
+        </div>
+
+        {!activityTrackingEnabled && todayTrackedMins === 0 ? (
+          <p className="text-xs leading-relaxed" style={{ color: currentTheme.textSecondary }}>
+            Turn on Activity Tracking in Settings to see which apps your time goes to —
+            sampled on-device every 30 seconds, never uploaded.
+          </p>
+        ) : todayRuns.length === 0 ? (
+          <p className="text-xs font-mono" style={{ color: currentTheme.textMuted }}>
+            No samples yet today. Keep Control running and switch apps normally.
+          </p>
+        ) : (
+          <>
+            <div
+              className="flex h-3 rounded-full overflow-hidden gap-px"
+              style={{ backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' }}
+            >
+              {todayRuns.map((run, i) => (
+                <span
+                  key={`${run.start}-${i}`}
+                  className="h-full block"
+                  style={{
+                    flexGrow: run.minutes,
+                    flexBasis: 0,
+                    backgroundColor: `hsl(${appHue(run.app)} 65% 55%)`,
+                  }}
+                  title={`${run.app} · ${run.start}–${run.end} (${run.minutes}m)`}
+                />
+              ))}
+            </div>
+            <div className="space-y-1.5">
+              {todayUsage.slice(0, 6).map((u) => {
+                const guess = attributeApp(u.app, tasks, modes);
+                const guessName =
+                  (guess.taskId && tasks.find((t) => t.id === guess.taskId)?.title) ||
+                  (guess.modeId && modes.find((m) => m.id === guess.modeId)?.name) ||
+                  null;
+                return (
+                  <div key={u.app} className="flex items-center gap-2.5">
+                    <span
+                      className="w-2 h-2 rounded-full shrink-0"
+                      style={{ backgroundColor: `hsl(${appHue(u.app)} 65% 55%)` }}
+                    />
+                    <span className="text-xs font-bold truncate w-32 shrink-0" style={{ color: currentTheme.textPrimary }}>
+                      {u.app}
+                    </span>
+                    <span
+                      className="text-[11px] font-mono shrink-0 w-12 text-right"
+                      style={{ color: currentTheme.textSecondary }}
+                    >
+                      {u.minutes}m
+                    </span>
+                    <span className="text-[11px] truncate" style={{ color: currentTheme.textMuted }}>
+                      {guessName ? `looks like: ${guessName}` : ''}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            <span className="text-[11px] font-mono block" style={{ color: currentTheme.textMuted }}>
+              {todayTrackedMins}m tracked today across {todayUsage.length} {todayUsage.length === 1 ? 'app' : 'apps'}
+            </span>
+          </>
+        )}
+      </div>
+
+      {/* Distraction Autopsy */}
+      <div className="p-6 rounded-3xl liquid-glass border space-y-4">
+        <div className="flex items-center space-x-2">
+          <ShieldAlert className="w-4 h-4 text-rose-500" />
+          <span className="font-bold text-sm" style={{ color: currentTheme.textPrimary }}>
+            Distraction Autopsy
+          </span>
+          <span className="text-[11px] font-mono" style={{ color: currentTheme.textMuted }}>
+            past 7 days
+          </span>
+        </div>
+
+        {offenders.length === 0 ? (
+          <p className="text-xs leading-relaxed" style={{ color: currentTheme.textSecondary }}>
+            Nothing caught trying to break through Shield in the past 7 days. Website blocks work
+            at the DNS level, so only reopened apps can be observed here.
+          </p>
+        ) : (
+          <>
+            <p className="text-xs" style={{ color: currentTheme.textSecondary }}>
+              Shield terminated <span className="font-bold" style={{ color: currentTheme.textPrimary }}>{recentDistractions.length}</span> app
+              {recentDistractions.length === 1 ? '' : 's'} mid-control this week:
+            </p>
+            <div className="space-y-2">
+              {offenders.map((o) => {
+                const defaultModeId =
+                  (o.modeId && modes.some((m) => m.id === o.modeId) ? o.modeId : null) ||
+                  modes.find((m) => !m.isChillMode)?.id ||
+                  modes[0]?.id ||
+                  '';
+                const targetId = blockTargets[o.name] ?? defaultModeId;
+                return (
+                  <div key={o.name} className="p-3 rounded-2xl liquid-glass-card border flex items-center gap-3">
+                    <div className="flex-1 min-w-0">
+                      <span className="text-xs font-bold block truncate" style={{ color: currentTheme.textPrimary }}>
+                        {o.name} <span className="font-mono text-rose-500">×{o.count}</span>
+                      </span>
+                      <span className="text-[11px] font-mono block" style={{ color: currentTheme.textMuted }}>
+                        last caught {timeAgo(o.lastT)}{o.modeName ? ` during ${o.modeName}` : ''}
+                      </span>
+                    </div>
+                    {onSaveModes && modes.length > 0 && (
+                      <span className="flex items-center gap-1.5 shrink-0">
+                        <select
+                          value={targetId}
+                          onChange={(e) => setBlockTargets((prev) => ({ ...prev, [o.name]: e.target.value }))}
+                          className="px-2 py-1.5 rounded-lg liquid-glass-input text-[11px] outline-none cursor-pointer max-w-[110px]"
+                          style={{ color: currentTheme.textPrimary }}
+                          title="Mode to block this app in"
+                        >
+                          {modes.map((m) => (
+                            <option key={m.id} value={m.id}>{m.name}</option>
+                          ))}
+                        </select>
+                        <button
+                          onClick={() => {
+                            const mode = modes.find((m) => m.id === targetId);
+                            if (!mode || (mode.blockedApps || []).includes(o.name)) return;
+                            onSaveModes(modes.map((m) =>
+                              m.id === mode.id ? { ...m, blockedApps: [...(m.blockedApps || []), o.name] } : m
+                            ));
+                          }}
+                          className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold cursor-pointer"
+                          style={{ backgroundColor: currentTheme.accent, color: currentTheme.accentText }}
+                          title={`Block ${o.name} in the selected mode`}
+                        >
+                          Block
+                        </button>
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </div>
 
       {/* Session History Log List */}
       <div className="p-6 rounded-3xl liquid-glass border space-y-4">
@@ -362,7 +639,11 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                       className="text-xs font-mono"
                       style={{ color: currentTheme.textSecondary }}
                     >
-                      {dateStr} · {s.actualWorkMinutes}m focused
+                      {dateStr} · {s.actualWorkMinutes}m controlled
+                      {s.plannedWorkMinutes != null && s.actualWorkMinutes < s.plannedWorkMinutes ? ` / ${s.plannedWorkMinutes}m planned` : ''}
+                      {s.finishedEarly ? ' · finished early' : ''}
+                      {s.skippedPhases ? ` · ${s.skippedPhases} skipped` : ''}
+                      {s.wallMinutes != null ? ` · ${s.wallMinutes}m wall` : ''}
                     </span>
                   </div>
                 </div>
@@ -396,7 +677,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
               className="py-12 text-center text-xs font-mono"
               style={{ color: currentTheme.textMuted }}
             >
-              No focus sessions recorded yet. Start your first session to build your streak!
+              No control sessions recorded yet. Start your first session to build your streak!
             </div>
           )}
         </div>

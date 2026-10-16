@@ -59,7 +59,7 @@ default-start: 09:00
 - Questions: 50
 - Duration: 60m
 - Timer: true
-- Focus Mode: true
+- Control Mode: true
 - Mode: Deep Work
 
 ## Break
@@ -69,7 +69,7 @@ default-start: 09:00
 - Questions: 50
 - Duration: 1h
 - Timer: yes
-- Focus Mode: on
+- Control Mode: on
 
 ## Pause
 - Type: break
@@ -80,7 +80,7 @@ default-start: 09:00
 - Items: 30
 - Duration: 30m
 - Timer: true
-- Focus Mode: false
+- Control Mode: false
 - Notes: Review chapters 3–4
 `;
 
@@ -118,10 +118,13 @@ describe('parseBool / parseTimeMinutes / formatMinutes', () => {
 
   expect(parseTimeMinutes('09:00')).toBe(540);
   expect(parseTimeMinutes('9:05')).toBe(545);
-  expect(parseTimeMinutes('24:00')).toBeNull();
+  expect(parseTimeMinutes('24:00')).toBe(1440);
+  expect(parseTimeMinutes('24:01')).toBeNull();
   expect(parseTimeMinutes('9am')).toBeNull();
   expect(formatMinutes(540)).toBe('09:00');
   expect(formatMinutes(775)).toBe('12:55');
+  expect(formatMinutes(1440)).toBe('24:00');
+  expect(formatMinutes(1500)).toBe('24:00');
 });
 
 describe('parseScheduleTemplate', () => {
@@ -141,7 +144,7 @@ describe('parseScheduleTemplate', () => {
     expect(math.countValue).toBe(50);
     expect(math.countLabel).toBe('questions');
     expect(math.timer).toBe(true);
-    expect(math.focusMode).toBe(true);
+    expect(math.controlMode).toBe(true);
     expect(math.modeName).toBe('Deep Work');
 
     expect(brk.kind).toBe('break');
@@ -150,7 +153,7 @@ describe('parseScheduleTemplate', () => {
 
     expect(english.durationMinutes).toBe(60);
     expect(english.timer).toBe(true);
-    expect(english.focusMode).toBe(true);
+    expect(english.controlMode).toBe(true);
 
     expect(pause.kind).toBe('break'); // explicit Type wins
     expect(pause.timer).toBe(false);
@@ -158,7 +161,7 @@ describe('parseScheduleTemplate', () => {
     expect(vocab.title).toBe('Vocabulary 🌱');
     expect(vocab.countValue).toBe(30);
     expect(vocab.countLabel).toBe('items');
-    expect(vocab.focusMode).toBe(false);
+    expect(vocab.controlMode).toBe(false);
     expect(vocab.notes).toEqual(['Review chapters 3–4']);
   });
 
@@ -188,7 +191,7 @@ describe('parseScheduleTemplate', () => {
       '## Bad',
       '- Duration: soon',
       '- Timer: perhaps',
-      '- Focus Mode: sometimes',
+      '- Control Mode: sometimes',
       '- Type: nap',
       '- Questions: lots',
       '- Count: many things',
@@ -200,7 +203,7 @@ describe('parseScheduleTemplate', () => {
     const { errors } = parseScheduleTemplate('t', raw);
     const fields = errors.map((e) => e.field);
     expect(fields).toEqual(
-      expect.arrayContaining(['Duration', 'Timer', 'Focus Mode', 'Type', 'Questions', 'Count', 'Mode'])
+      expect.arrayContaining(['Duration', 'Timer', 'Control Mode', 'Type', 'Questions', 'Count', 'Mode'])
     );
     expect(errors.every((e) => e.template === 't')).toBe(true);
     expect(errors.some((e) => e.section === null)).toBe(true); // empty heading
@@ -297,7 +300,7 @@ describe('generateSchedule', () => {
     expect(math.source).toBe('control');
     expect(math.description).toBe('50 questions');
     expect(math.timerEnabled).toBe(true);
-    expect(math.focusMode).toBe(true);
+    expect(math.controlMode).toBe(true);
     expect(math.modeId).toBe('mode-deep');
     expect(math.originTemplate).toBe('Daily SAT');
     expect(math.originTemplateAppliedAt).toBe(new Date(1_000_000).toISOString());
@@ -305,10 +308,10 @@ describe('generateSchedule', () => {
 
     expect(brk.modeId).toBe('mode-break');
     expect(brk.timerEnabled).toBe(false);
-    expect(brk.focusMode).toBeUndefined();
+    expect(brk.controlMode).toBeUndefined();
 
     expect(vocab.description).toBe('30 items · Review chapters 3–4');
-    expect(vocab.focusMode).toBe(false);
+    expect(vocab.controlMode).toBe(false);
   });
 
   it('creates blocks in the existing sync-eligible event shape', () => {
@@ -350,7 +353,7 @@ describe('generateSchedule', () => {
     const before = parseScheduleTemplate('Daily SAT', SAT_MD).template;
     const res = run({
       overrides: {
-        0: { title: 'Custom Math', durationMinutes: 30, countValue: 25, timer: false, focusMode: false },
+        0: { title: 'Custom Math', durationMinutes: 30, countValue: 25, timer: false, controlMode: false },
         2: { modeId: 'mode-break' },
       },
     });
@@ -359,7 +362,7 @@ describe('generateSchedule', () => {
     expect(res.blocks[0].endTime).toBe('09:30');
     expect(res.blocks[0].description).toBe('25 questions');
     expect(res.blocks[0].timerEnabled).toBe(false);
-    expect(res.blocks[0].focusMode).toBe(false);
+    expect(res.blocks[0].controlMode).toBe(false);
     expect(res.blocks[1].startTime).toBe('09:30'); // downstream shifts
     expect(res.blocks[2].modeId).toBe('mode-break');
     // Template untouched.
@@ -439,13 +442,13 @@ describe('validateSingleBlockDurations', () => {
     modeId, modeName, startTime, endTime,
   });
 
-  it('flags single-block events whose length differs from the focus length', () => {
+  it('flags single-block events whose length differs from the control length', () => {
     expect(
       validateSingleBlockDurations([blk('m-25', 'SAT English', '13:30', '14:00')], modes)
     ).toEqual([]);
     const [m] = validateSingleBlockDurations([blk('m-25', 'SAT English', '13:30', '14:15')], modes);
     expect(m).toMatchObject({
-      index: 0, title: 'SAT English', eventMinutes: 45, focusMinutes: 30, modeName: '25 English',
+      index: 0, title: 'SAT English', eventMinutes: 45, controlMinutes: 30, modeName: '25 English',
     });
   });
 

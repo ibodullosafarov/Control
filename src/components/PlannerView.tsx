@@ -5,7 +5,7 @@ import {
   CalendarCheck, ListPlus, Flame, MoveRight, PanelLeft, Check, FolderSync,
   Layers, Target, FileText
 } from 'lucide-react';
-import { StudyMode, ThemeId, ScheduleBlock, DayPlan, GoogleCalendarConfig, TaskItem, ObsidianConfig } from '../types';
+import { StudyMode, ModeFolder, Exam, ControlSession, ThemeId, ScheduleBlock, DayPlan, GoogleCalendarConfig, TaskItem, ObsidianConfig } from '../types';
 import { THEMES } from '../styles/themes';
 import { DynamicIcon } from './DynamicIcon';
 import { obsidianService } from '../services/obsidian';
@@ -30,9 +30,16 @@ import {
 } from '../services/calendarGrid';
 import { useGoogleSyncStatus } from '../services/googleSync';
 import { DayPlanMarkdownView } from './DayPlanMarkdownView';
+import { ExamsView } from './ExamsView';
+import { groupModesByFolder } from '../services/modeFolders';
+import { ModeViewToggle, useModeViewPref } from './ModeViewToggle';
 
 interface PlannerViewProps {
   modes: StudyMode[];
+  modeFolders?: ModeFolder[];
+  exams?: Exam[];
+  onSaveExams?: (exams: Exam[]) => void;
+  sessions?: ControlSession[];
   plans: Record<string, DayPlan>;
   tasks?: TaskItem[];
   obsidianConfig?: ObsidianConfig;
@@ -40,11 +47,11 @@ interface PlannerViewProps {
   onStartBlockInTimer: (mode: StudyMode, block: ScheduleBlock) => void;
   onBackToLauncher: () => void;
   onOpenSettings?: () => void;
-  onAddTask?: (title: string, modeId?: string) => TaskItem;
   calendarConfig: GoogleCalendarConfig;
   onUpdateCalendarConfig: (config: GoogleCalendarConfig) => void;
   theme: ThemeId;
   onObsidianSynced?: (at: string) => void;
+  dailyGoalMinutes?: number;
 }
 
 /** Fields mirrored to Google Calendar — used to detect real block edits. */
@@ -77,6 +84,10 @@ function formatTimeRange12h(startTime: string, endTime: string): string {
 
 export const PlannerView: React.FC<PlannerViewProps> = ({
   modes,
+  modeFolders,
+  exams,
+  onSaveExams,
+  sessions,
   plans,
   tasks = [],
   obsidianConfig,
@@ -84,14 +95,41 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
   onStartBlockInTimer,
   onBackToLauncher,
   onOpenSettings,
-  onAddTask,
   calendarConfig,
   onUpdateCalendarConfig,
   theme,
   onObsidianSynced,
+  dailyGoalMinutes = 120,
 }) => {
   const currentTheme = THEMES[theme] || THEMES.serika;
   const isDark = currentTheme.isDark;
+
+  // Folder-grouped mode ordering shared by the checklist and block selector.
+  const folderNameById = new Map((modeFolders || []).map((f) => [f.id, f.name]));
+  const showFolderLabels = (modeFolders?.length || 0) > 0;
+  const modeListEntries: Array<{ label: string | null; mode: StudyMode }> = (() => {
+    const entries: Array<{ label: string | null; mode: StudyMode }> = [];
+    let prev: string | null = null;
+    for (const m of groupModesByFolder(modes, modeFolders || []).flatMap((g) => g.modes)) {
+      const label = showFolderLabels
+        ? (m.folderId ? folderNameById.get(m.folderId) || 'Ungrouped' : 'Ungrouped')
+        : '';
+      const show = showFolderLabels && label !== prev;
+      prev = label;
+      entries.push({ label: show ? label : null, mode: m });
+    }
+    return entries;
+  })();
+  const [blockModeView, setBlockModeView] = useModeViewPref();
+
+  // Calendar layers: planned blocks, Google-synced events, recorded sessions.
+  const [showPlanLayer, setShowPlanLayer] = useState(true);
+  const [showGoogleLayer, setShowGoogleLayer] = useState(true);
+  const [showRecordedLayer, setShowRecordedLayer] = useState(true);
+  const passesLayers = (b: ScheduleBlock) => {
+    if (b.googleCalendarEventId) return showGoogleLayer;
+    return showPlanLayer;
+  };
 
   // Grid time limits: 06:00 AM to 23:00 PM (18 hours)
   const START_HOUR = 6;
@@ -107,6 +145,9 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
   hourHeightRef.current = hourHeight;
   const pendingScrollTopRef = useRef<number | null>(null);
   const smoothRestoreRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (smoothRestoreRef.current) window.clearTimeout(smoothRestoreRef.current);
+  }, []);
   // While a zoom gesture is in flight, geometry transitions are suppressed so
   // the ruler, cards and current-time line track the cursor 1:1 instead of
   // easing behind it and only settling once the gesture ends.
@@ -126,12 +167,12 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
   const [selectedDate, setSelectedDate] = useState<string>(todayStr);
 
   // View switch: 'day', 'week', or 'plan' (Markdown day plan)
-  const [calendarView, setCalendarView] = useState<'day' | 'week' | 'plan'>('day');
+  const [calendarView, setCalendarView] = useState<'day' | 'week' | 'plan' | 'exams'>('day');
 
   // Sidebar visibility toggle
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
 
-  // Focus Modes checklist filter (Apple Calendar sidebar style)
+  // Control Modes checklist filter (Apple Calendar sidebar style)
   const [enabledModeIds, setEnabledModeIds] = useState<Set<string>>(
     () => new Set(modes.map((m) => m.id))
   );
@@ -190,7 +231,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
   // Mini Month Calendar state (for left sidebar)
   const [miniCalendarMonth, setMiniCalendarMonth] = useState<Date>(() => new Date(selectedDate + 'T00:00:00'));
 
-  // Modal states for Add / Edit Focus Block (Apple event inspector sheet)
+  // Modal states for Add / Edit Control Block (Apple event inspector sheet)
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
   const [blockTitle, setBlockTitle] = useState('');
@@ -383,6 +424,17 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
     dragCleanupRef.current = () => {};
   };
 
+  // S-06: single-cycle blocks keep timer == wall on move/resize so the
+  // event and the timer never disagree. Multi-cycle blocks keep their shape
+  // (wall mismatch is surfaced by validateSingleBlockDurations elsewhere).
+  const syncSingleCycleWall = (b: ScheduleBlock, startTime: string, endTime: string): ScheduleBlock => {
+    if ((b.cycles || 1) !== 1 || b.timerEnabled === false) return { ...b, startTime, endTime };
+    const [sH, sM] = startTime.split(':').map(Number);
+    const [eH, eM] = endTime.split(':').map(Number);
+    const wall = Math.max(15, (eH * 60 + eM) - (sH * 60 + sM));
+    return { ...b, startTime, endTime, workDuration: wall, breakDuration: 0 };
+  };
+
   const commitMove = (
     block: ScheduleBlock,
     toDate: string,
@@ -410,13 +462,13 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
     if (toDate === block.date) {
       const list = currentPlans[block.date]?.blocks || [];
       if (!list.some((b) => b.id === block.id)) return;
-      persist(block.date, applyMoveToList(list, block.id, startTime, endTime));
+      persist(block.date, list.map((b) => (b.id === block.id ? syncSingleCycleWall(b, startTime, endTime) : b)));
     } else {
       const src = currentPlans[block.date]?.blocks || [];
       if (!src.some((b) => b.id === block.id)) return;
       persist(block.date, src.filter((b) => b.id !== block.id));
       const target = currentPlans[toDate]?.blocks || [];
-      persist(toDate, [...target, { ...block, date: toDate, startTime, endTime }]);
+      persist(toDate, [...target, syncSingleCycleWall({ ...block, date: toDate }, startTime, endTime)]);
     }
   };
 
@@ -426,7 +478,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
     if (!list.some((b) => b.id === block.id)) return;
     persistRef.current(
       block.date,
-      list.map((b) => (b.id === block.id ? { ...b, endTime: minutesToHHMM(end) } : b))
+      list.map((b) => (b.id === block.id ? syncSingleCycleWall(b, b.startTime, minutesToHHMM(end)) : b))
     );
   };
 
@@ -436,7 +488,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
     if (!list.some((b) => b.id === block.id)) return;
     persistRef.current(
       block.date,
-      list.map((b) => (b.id === block.id ? { ...b, startTime: minutesToHHMM(start) } : b))
+      list.map((b) => (b.id === block.id ? syncSingleCycleWall(b, minutesToHHMM(start), b.endTime) : b))
     );
   };
 
@@ -718,6 +770,11 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
   };
 
   // Save new or edited block
+  // Duration glossary (B-06/B-10): the calendar event is the WALL interval
+  // [start,end). Stored work/break/cycles describe the timer that runs inside
+  // it: wall ≈ cycles*work + (cycles-1)*break. Manual blocks default to a
+  // single honest cycle (work = wall, break = 0) instead of an invented
+  // 80/20 split, so the event and the timer agree.
   const handleSaveModalBlock = () => {
     const chosenMode = modes.find((m) => m.id === blockModeId) || modes[0];
     const [sH, sM] = blockStartTime.split(':').map(Number);
@@ -728,11 +785,17 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
     const targetDate = blockDate || selectedDate;
     const datePlan = plans[targetDate];
     const targetDateBlocks = datePlan?.blocks || (targetDate === selectedDate ? blocks : []);
+    // Single-cycle default: the timer fills the visible event exactly.
+    const defaultWork = durationMins;
+    const defaultBreak = 0;
 
     if (editingBlockId) {
-      // Update existing block
+      // Update existing block — preserve the timer shape unless the user
+      // changed the mode or cycle count; never invent an 80/20 split.
       const updated = targetDateBlocks.map((b) => {
         if (b.id === editingBlockId) {
+          const modeChanged = b.modeId !== chosenMode.id;
+          const cycles = blockCycles || b.cycles || 1;
           return {
             ...b,
             date: targetDate,
@@ -742,9 +805,9 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
             modeName: finalTitle,
             modeIcon: chosenMode.icon,
             modeColor: chosenMode.color,
-            workDuration: Math.round(durationMins * 0.8),
-            breakDuration: Math.round(durationMins * 0.2),
-            cycles: blockCycles,
+            workDuration: modeChanged || b.workDuration == null ? (cycles === 1 ? defaultWork : chosenMode.workDuration) : b.workDuration,
+            breakDuration: modeChanged || b.breakDuration == null ? (cycles === 1 ? defaultBreak : chosenMode.breakDuration) : b.breakDuration,
+            cycles,
           };
         }
         return b;
@@ -761,17 +824,15 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
         modeName: finalTitle,
         modeIcon: chosenMode.icon,
         modeColor: chosenMode.color,
-        workDuration: Math.round(durationMins * 0.8),
-        breakDuration: Math.round(durationMins * 0.2),
+        workDuration: blockCycles > 1 ? chosenMode.workDuration : defaultWork,
+        breakDuration: blockCycles > 1 ? chosenMode.breakDuration : defaultBreak,
         cycles: blockCycles,
         status: 'approved',
       };
       persistBlocksForDate(targetDate, [...targetDateBlocks, newBlock]);
-
-      // Also create a corresponding task so the event is tracked in the task queue
-      if (onAddTask) {
-        onAddTask(finalTitle, chosenMode.id);
-      }
+      // No extra onAddTask call here: persist → onSavePlan already mirrors
+      // the block into the task queue (task-cal-*). Calling onAddTask too
+      // created a second manual task with the same title (the duplication bug).
     }
 
     setIsEditModalOpen(false);
@@ -779,6 +840,12 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
 
   const handleDeleteBlock = (block: ScheduleBlock, e: React.MouseEvent) => {
     e.stopPropagation();
+    // S-13: confirm downstream effects instead of silent delete.
+    const bits: string[] = [];
+    if (block.googleCalendarEventId) bits.push('linked Google event');
+    if (block.timerEnabled !== false) bits.push('scheduled auto-run');
+    bits.push('mirrored task');
+    if (!confirm(`Delete "${block.modeName}" (${block.startTime}–${block.endTime})?\n\nThis also removes: ${bits.join(', ')}. Completed mirrored tasks are kept.`)) return;
     const targetDate = block.date || selectedDate;
     const datePlan = plans[targetDate];
     const targetDateBlocks = datePlan?.blocks || (targetDate === selectedDate ? blocks : []);
@@ -844,8 +911,20 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
     }
   };
 
+  // Tasks already living on the calendar (source === 'calendar') must not be
+  // scheduled again — scheduling them a second time created a second block
+  // plus a second mirrored task. Only manual tasks are schedulable.
+  const unscheduledTasks = useMemo(
+    () => (tasks || []).filter((t) => !t.completed && t.source !== 'calendar'),
+    [tasks]
+  );
+
   // Quick schedule a task into the next open slot
   const handleScheduleTask = (task: TaskItem) => {
+    if (task.source === 'calendar') {
+      setSyncFeedback({ message: 'That task is already on the calendar.', type: 'info' });
+      return;
+    }
     const taskMode = modes.find((m) => m.id === task.modeId) || modes[0];
     const duration = taskMode.workDuration || 45;
 
@@ -870,6 +949,10 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
     const startH = Math.floor(candidateStartMins / 60);
     const startM = candidateStartMins % 60;
     const endMins = candidateStartMins + duration;
+    if (endMins > 24 * 60) {
+      setSyncFeedback({ message: 'No free slot before midnight — shorten or move a block.', type: 'error' });
+      return;
+    }
     const endH = Math.floor(endMins / 60);
     const endM = endMins % 60;
 
@@ -900,7 +983,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
 
   // Auto-pack all pending tasks into calendar
   const handleAutoScheduleFromTasks = () => {
-    const pendingTasks = (tasks || []).filter((t) => !t.completed);
+    const pendingTasks = unscheduledTasks;
     if (pendingTasks.length === 0) {
       setSyncFeedback({ message: 'No pending tasks in queue to schedule.', type: 'info' });
       return;
@@ -914,9 +997,10 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
       const dur = taskMode.workDuration || 45;
       const brk = taskMode.breakDuration || 10;
 
+      const endMins = cursorMins + dur;
+      if (endMins > 24 * 60) break; // stop at midnight instead of emitting "24:xx"
       const startH = Math.floor(cursorMins / 60);
       const startM = cursorMins % 60;
-      const endMins = cursorMins + dur;
       const endH = Math.floor(endMins / 60);
       const endM = endMins % 60;
 
@@ -938,7 +1022,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
       cursorMins = endMins + brk;
     }
 
-    persistBlocksForDate(selectedDate, newBlocks);
+    persistBlocksForDate(selectedDate, [...blocks, ...newBlocks]);
     setSyncFeedback({ message: `Auto-scheduled ${newBlocks.length} tasks into ${selectedDate}!`, type: 'success' });
   };
 
@@ -947,8 +1031,14 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
       setSyncFeedback({ message: 'No blocks to export for this day.', type: 'info' });
       return;
     }
-    if (window.focusAPI?.exportToIcs) {
-      const res = await window.focusAPI.exportToIcs(blocks);
+    if (window.controlAPI?.exportToIcs) {
+      let res: { success: boolean } | null = null;
+      try {
+        res = (await window.controlAPI.exportToIcs(blocks)) as { success: boolean };
+      } catch (err) {
+        console.warn('ICS export failed:', err);
+        return;
+      }
       if (res.success) {
         setSyncFeedback({ message: 'Exported & opened in Apple Calendar (.ics)!', type: 'success' });
       }
@@ -987,18 +1077,24 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
     }
   };
 
-  // Total Focus Minutes scheduled for today
-  const totalFocusMinutesScheduled = useMemo(() => {
+  // Total WALL minutes scheduled for today (calendar intervals) plus the
+  // implied CONTROL-WORK minutes (cycles × work). Wall includes breaks/gaps;
+  // work counts only control. Both are shown so the plan is honest (B-06).
+  const totalWallMinutesScheduled = useMemo(() => {
     return blocks.reduce((acc, b) => {
       const [sH, sM] = b.startTime.split(':').map(Number);
       const [eH, eM] = b.endTime.split(':').map(Number);
       return acc + Math.max(0, (eH * 60 + eM) - (sH * 60 + sM));
     }, 0);
   }, [blocks]);
+  const totalControlMinutesScheduled = totalWallMinutesScheduled;
+  const totalWorkMinutesScheduled = useMemo(() => {
+    return blocks.reduce((acc, b) => acc + (b.cycles || 1) * (b.workDuration || 0), 0);
+  }, [blocks]);
 
-  // Daily goal: 5 hours (300 mins)
-  const DAILY_GOAL_MINS = 300;
-  const goalProgressPercent = Math.min(100, Math.round((totalFocusMinutesScheduled / DAILY_GOAL_MINS) * 100));
+  // Daily goal: single source of truth from settings (B-06/B-13).
+  const DAILY_GOAL_MINS = dailyGoalMinutes && dailyGoalMinutes > 0 ? dailyGoalMinutes : 120;
+  const goalProgressPercent = Math.min(100, Math.round((totalWallMinutesScheduled / DAILY_GOAL_MINS) * 100));
 
   // Generate hour slots array: [6, 7, 8, ... 22]
   const hourSlots = Array.from({ length: TOTAL_HOURS }, (_, i) => START_HOUR + i);
@@ -1051,10 +1147,36 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
     setMiniCalendarMonth(new Date(miniCalendarMonth.getFullYear(), miniCalendarMonth.getMonth() + 1, 1));
   };
 
-  // Filter blocks by enabled mode checklist
+  // Filter blocks by enabled mode checklist + visible layers.
   const visibleBlocks = useMemo(() => {
-    return blocks.filter((b) => enabledModeIds.has(b.modeId));
-  }, [blocks, enabledModeIds]);
+    return blocks.filter((b) => enabledModeIds.has(b.modeId) && passesLayers(b));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [blocks, enabledModeIds, showPlanLayer, showGoogleLayer]);
+
+  // Finished sessions mapped onto the grid (recorded layer).
+  const recordedByDay = useMemo(() => {
+    const map = new Map<string, { top: number; height: number; title: string; color: string }[]>();
+    if (!showRecordedLayer) return map;
+    for (const s of sessions || []) {
+      if (s.status !== 'completed' || !s.startTime || !s.endTime) continue;
+      const start = new Date(s.startTime);
+      const end = new Date(s.endTime);
+      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) continue;
+      const key = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`;
+      const startMins = start.getHours() * 60 + start.getMinutes();
+      const mins = Math.max(10, Math.round((end.getTime() - start.getTime()) / 60000));
+      const list = map.get(key) || [];
+      list.push({
+        top: minutesToY(startMins, START_HOUR, hourHeight),
+        height: Math.max(8, (mins / 60) * hourHeight - 4),
+        title: `${s.modeName} · ${s.actualWorkMinutes}m recorded`,
+        color: modes.find((m) => m.id === s.modeId)?.color || currentTheme.accent,
+      });
+      map.set(key, list);
+    }
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessions, hourHeight, showRecordedLayer]);
 
   // Side-by-side cascade lanes for overlapping grid events (day view).
   // All-day events render in their own strip (never in the grid): a 00:00–
@@ -1204,6 +1326,17 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
           >
             Plan
           </button>
+          <button
+            onClick={() => setCalendarView('exams')}
+            className={`px-4 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+              calendarView === 'exams'
+                ? 'bg-sky-500 text-white shadow-sm'
+                : 'hover:bg-white/5 opacity-70 hover:opacity-100'
+            }`}
+            style={{ color: calendarView === 'exams' ? '#ffffff' : currentTheme.textPrimary }}
+          >
+            Exams
+          </button>
         </div>
 
         {/* Right: Actions (Add Block, Auto-Schedule, Export, Obsidian) */}
@@ -1214,7 +1347,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
             style={{ color: currentTheme.textSecondary }}
           >
             <Clock className="w-3.5 h-3.5 text-sky-400" />
-            <span>{Math.round(totalFocusMinutesScheduled / 60 * 10) / 10}h scheduled</span>
+            <span title={`Wall ${totalWallMinutesScheduled}m (control work ${totalWorkMinutesScheduled}m + breaks/gaps)`}>{Math.round(totalWallMinutesScheduled / 60 * 10) / 10}h wall · {Math.round(totalWorkMinutesScheduled / 60 * 10) / 10}h work</span>
             <span className="opacity-40">·</span>
             <span>{blocks.length} {blocks.length === 1 ? 'session' : 'sessions'}</span>
           </div>
@@ -1278,7 +1411,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
             <span className="hidden lg:inline">Apple Calendar</span>
           </button>
 
-          {/* Apple Blue "+ Focus Block" button */}
+          {/* Apple Blue "+ Control Block" button */}
           <button
             onClick={() => handleSlotClick(9, 0, selectedDate)}
             className="flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all hover:brightness-110 active:scale-95 shadow-md cursor-pointer text-white"
@@ -1389,12 +1522,12 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
               </div>
             </div>
 
-            {/* 2. Apple Activity Daily Focus Goal Meter */}
+            {/* 2. Apple Activity Daily Control Goal Meter */}
             <div className="p-3.5 rounded-2xl liquid-glass border space-y-2">
               <div className="flex items-center justify-between text-xs font-bold">
                 <span className="flex items-center space-x-1.5" style={{ color: currentTheme.textPrimary }}>
                   <Flame className="w-3.5 h-3.5 text-amber-500" />
-                  <span>Daily Focus Goal</span>
+                  <span>Daily Control Goal</span>
                 </span>
                 <span className="font-mono text-sky-400 text-[11px]">{goalProgressPercent}%</span>
               </div>
@@ -1410,25 +1543,34 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
               </div>
 
               <div className="flex justify-between text-[10px] font-mono opacity-70" style={{ color: currentTheme.textSecondary }}>
-                <span>{Math.round(totalFocusMinutesScheduled / 60 * 10) / 10}h scheduled</span>
-                <span>5h target</span>
+                <span title={`Wall ${totalWallMinutesScheduled}m · work ${totalWorkMinutesScheduled}m`}>{Math.round(totalWallMinutesScheduled / 60 * 10) / 10}h wall · {Math.round(totalWorkMinutesScheduled / 60 * 10) / 10}h work</span>
+                <span>{Math.round(DAILY_GOAL_MINS / 60 * 10) / 10}h target</span>
               </div>
             </div>
 
-            {/* 3. Apple Calendar "FOCUS CALENDARS" Checklist Filter */}
+            {/* 3. Apple Calendar "CONTROL CALENDARS" Checklist Filter */}
             <div className="space-y-2">
               <span 
                 className="text-[10px] font-mono uppercase tracking-wider font-bold block"
                 style={{ color: currentTheme.textMuted }}
               >
-                Focus Calendars
+                Control Calendars
               </span>
 
               <div className="space-y-1.5">
-                {modes.map((mode) => {
+                {modeListEntries.map(({ label, mode }) => {
                   const isChecked = enabledModeIds.has(mode.id);
                   const modeColor = mode.color || currentTheme.accent;
                   return (
+                    <React.Fragment key={mode.id}>
+                      {label && (
+                        <div
+                          className="text-[10px] font-mono font-bold uppercase tracking-wider pt-1"
+                          style={{ color: currentTheme.textMuted }}
+                        >
+                          {label}
+                        </div>
+                      )}
                     <div
                       key={mode.id}
                       onClick={() => toggleModeFilter(mode.id)}
@@ -1458,8 +1600,49 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                         {mode.workDuration}m
                       </span>
                     </div>
+                    </React.Fragment>
                   );
                 })}
+              </div>
+            </div>
+
+            {/* 3b. Calendar Layers */}
+            <div className="space-y-2">
+              <span
+                className="text-[10px] font-mono uppercase tracking-wider font-bold block"
+                style={{ color: currentTheme.textMuted }}
+              >
+                Layers
+              </span>
+
+              <div className="space-y-1.5">
+                {[
+                  { label: 'Planned blocks', on: showPlanLayer, toggle: () => setShowPlanLayer((v) => !v) },
+                  { label: 'Google synced', on: showGoogleLayer, toggle: () => setShowGoogleLayer((v) => !v) },
+                  { label: 'Recorded sessions', on: showRecordedLayer, toggle: () => setShowRecordedLayer((v) => !v) },
+                ].map((layer) => (
+                  <div
+                    key={layer.label}
+                    onClick={layer.toggle}
+                    className="px-2.5 py-1.5 rounded-xl hover:bg-white/5 flex items-center justify-between transition-colors cursor-pointer"
+                  >
+                    <span
+                      className="text-xs font-semibold"
+                      style={{ color: layer.on ? currentTheme.textPrimary : currentTheme.textMuted }}
+                    >
+                      {layer.label}
+                    </span>
+                    <div
+                      className="w-3.5 h-3.5 rounded-md border flex items-center justify-center transition-all"
+                      style={{
+                        backgroundColor: layer.on ? currentTheme.accent : 'transparent',
+                        borderColor: layer.on ? currentTheme.accent : currentTheme.textMuted,
+                      }}
+                    >
+                      {layer.on && <Check className="w-2.5 h-2.5 text-white" />}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
 
@@ -1474,12 +1657,12 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                   <span>Tasks Backlog</span>
                 </span>
                 <span className="text-[10px] font-mono opacity-60">
-                  {tasks.filter((t) => !t.completed).length}
+                  {unscheduledTasks.length}
                 </span>
               </div>
 
               <div className="space-y-2 overflow-y-auto flex-1 pr-1">
-                {tasks.filter((t) => !t.completed).map((t) => {
+                {unscheduledTasks.map((t) => {
                   const tMode = modes.find((m) => m.id === t.modeId) || modes[0];
                   return (
                     <div 
@@ -1512,7 +1695,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                   );
                 })}
 
-                {tasks.filter((t) => !t.completed).length === 0 && (
+                {unscheduledTasks.length === 0 && (
                   <div 
                     className="text-center py-6 text-xs font-medium space-y-1"
                     style={{ color: currentTheme.textMuted }}
@@ -1717,7 +1900,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                               title={
                                 block.timerEnabled === false
                                   ? 'Timer is disabled for this session (template setting)'
-                                  : 'Start Focus Session Now'
+                                  : 'Start Control Session Now'
                               }
                             >
                               <Play className="w-2.5 h-2.5 fill-current" />
@@ -1769,7 +1952,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                             title={
                               block.timerEnabled === false
                                 ? 'Timer is disabled for this session (template setting)'
-                                : 'Start Focus Session Now'
+                                : 'Start Control Session Now'
                             }
                           >
                             <Play className="w-3 h-3 fill-current" />
@@ -1822,6 +2005,25 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                     </div>
                   );
                 })}
+                {/* Recorded sessions layer (finished control sessions) */}
+                {(recordedByDay.get(selectedDate) || []).map((r, i) => (
+                  <div
+                    key={`rec-${r.top}-${i}`}
+                    className="absolute pointer-events-auto"
+                    style={{
+                      top: `${r.top}px`,
+                      height: `${r.height}px`,
+                      right: 0,
+                      width: '7px',
+                      borderRadius: 4,
+                      backgroundColor: r.color,
+                      opacity: 0.8,
+                      boxShadow: `0 0 8px ${r.color}`,
+                      zIndex: 5,
+                    }}
+                    title={`${r.title} (recorded)`}
+                  />
+                ))}
                 {/* Drag ghost (move / resize / create preview) */}
                 {dragPreview && dragPreview.date === selectedDate && (
                   <div
@@ -1898,7 +2100,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
 
               {/* All-day strip (one cell per day; grid stays for timed events) */}
               {weekDaysInfo.some(
-                (col) => (plans[col.dateStr]?.blocks || []).some((b) => b.allDay && enabledModeIds.has(b.modeId))
+                (col) => (plans[col.dateStr]?.blocks || []).some((b) => b.allDay && enabledModeIds.has(b.modeId) && passesLayers(b))
               ) && (
                 <div className="flex border-b"
                   style={{ borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)' }}
@@ -1907,7 +2109,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                   <div className="flex-1 grid grid-cols-7 divide-x" style={{ borderColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)' }}>
                     {weekDaysInfo.map((col) => {
                       const allDay = (plans[col.dateStr]?.blocks || []).filter(
-                        (b) => b.allDay && enabledModeIds.has(b.modeId)
+                        (b) => b.allDay && enabledModeIds.has(b.modeId) && passesLayers(b)
                       );
                       return (
                         <div key={col.dateStr} className="px-1 py-1 space-y-1 min-w-0">
@@ -2012,11 +2214,28 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                 {/* Blocks for all 7 Days across week */}
                 <div ref={weekEventsRef} className="absolute top-0 left-16 right-0 bottom-0 pointer-events-none grid grid-cols-7">
                   {weekDaysInfo.map((col) => {
-                    const dayBlocks = (plans[col.dateStr]?.blocks || []).filter((b) => enabledModeIds.has(b.modeId));
+                    const dayBlocks = (plans[col.dateStr]?.blocks || []).filter((b) => enabledModeIds.has(b.modeId) && passesLayers(b));
                     const gridBlocks = dayBlocks.filter((b) => !b.allDay);
                     const colLayout = layoutOverlappingBlocks(gridBlocks);
                     return (
                       <div key={col.dateStr} className="relative h-full px-1">
+                        {(recordedByDay.get(col.dateStr) || []).map((r, i) => (
+                          <div
+                            key={`rec-${r.top}-${i}`}
+                            className="absolute pointer-events-auto"
+                            style={{
+                              top: `${r.top}px`,
+                              height: `${r.height}px`,
+                              right: 2,
+                              width: '5px',
+                              borderRadius: 3,
+                              backgroundColor: r.color,
+                              opacity: 0.8,
+                              zIndex: 5,
+                            }}
+                            title={`${r.title} (recorded)`}
+                          />
+                        ))}
                         {gridBlocks.map((block) => {
                           const [sH, sM] = block.startTime.split(':').map(Number);
                           const [eH, eM] = block.endTime.split(':').map(Number);
@@ -2152,17 +2371,33 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
             />
             </div>
           )}
+
+          {/* =========================================================================
+              VIEW 4: EXAMS (countdowns + syllabus planning)
+              ========================================================================= */}
+          {calendarView === 'exams' && onSaveExams && (
+            <div className="flex-1 flex flex-col min-h-full overflow-y-auto">
+              <ExamsView
+                exams={exams || []}
+                modes={modes}
+                plans={plans}
+                onSaveExams={onSaveExams}
+                onSavePlan={onSavePlan}
+                theme={theme}
+              />
+            </div>
+          )}
         </div>
       </div>
 
       {/* =========================================================================
-          APPLE EVENT INSPECTOR SHEET (ADD / EDIT FOCUS BLOCK MODAL)
+          APPLE EVENT INSPECTOR SHEET (ADD / EDIT CONTROL BLOCK MODAL)
           ========================================================================= */}
       {isEditModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 select-none">
           <div 
             onClick={() => setIsEditModalOpen(false)}
-            className="absolute inset-0 bg-black/65 backdrop-blur-sm transition-opacity"
+            className="absolute inset-0 bg-transparent transition-opacity"
           />
 
           <div 
@@ -2184,7 +2419,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                   className="text-sm font-bold tracking-tight"
                   style={{ color: currentTheme.textPrimary }}
                 >
-                  {editingBlockId ? 'Edit Focus Block' : 'Schedule Focus Block'}
+                  {editingBlockId ? 'Edit Control Block' : 'Schedule Control Block'}
                 </h2>
               </div>
               <button 
@@ -2200,7 +2435,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
               {/* Event Title */}
               <div>
                 <label className="text-[11px] font-mono uppercase block mb-1 font-semibold" style={{ color: currentTheme.textSecondary }}>
-                  Focus Event Title
+                  Control Event Title
                 </label>
                 <input
                   type="text"
@@ -2215,14 +2450,26 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
 
               {/* Study Mode Selector (Apple colored dots) */}
               <div>
-                <label className="text-[11px] font-mono uppercase block mb-1 font-semibold" style={{ color: currentTheme.textSecondary }}>
-                  Focus Calendar / Study Mode
-                </label>
-                <div className="grid grid-cols-2 gap-2 max-h-36 overflow-y-auto pr-1">
-                  {modes.map((m) => {
+                <div className="flex items-center justify-between mb-1 gap-2">
+                  <label className="text-[11px] font-mono uppercase font-semibold" style={{ color: currentTheme.textSecondary }}>
+                    Control Calendar / Study Mode
+                  </label>
+                  <ModeViewToggle view={blockModeView} onChange={setBlockModeView} theme={theme} />
+                </div>
+                <div className={blockModeView === 'grid' ? 'grid grid-cols-2 gap-2 max-h-36 overflow-y-auto pr-1' : 'space-y-1.5 max-h-36 overflow-y-auto pr-1'}>
+                  {modeListEntries.map(({ label, mode: m }) => {
                     const isSel = blockModeId === m.id;
                     const modeColor = m.color || currentTheme.accent;
                     return (
+                      <React.Fragment key={m.id}>
+                        {label && (
+                          <div
+                            className="col-span-2 text-[10px] font-mono font-bold uppercase tracking-wider pt-1"
+                            style={{ color: currentTheme.textMuted }}
+                          >
+                            {label}
+                          </div>
+                        )}
                       <button
                         key={m.id}
                         type="button"
@@ -2249,6 +2496,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                           </span>
                         </div>
                       </button>
+                      </React.Fragment>
                     );
                   })}
                 </div>

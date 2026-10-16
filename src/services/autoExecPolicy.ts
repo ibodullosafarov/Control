@@ -1,10 +1,10 @@
-import { FocusAppData, ScheduleBlock, StudyMode } from '../types';
+import { ControlAppData, ScheduleBlock, StudyMode } from '../types';
 
 /**
  * Automatic study-day execution policy (pure, no Electron/Node APIs).
  *
  * Decides, from planner blocks + modes + persisted occurrence records,
- * which notifications to send and which focus sessions to start/end — and
+ * which notifications to send and which control sessions to start/end — and
  * which occurrences to skip. The Electron service (`electron/autoexec.ts`)
  * executes these decisions (timers, Notification, renderer round-trips) and
  * persists the records; all branching rules live here so they are
@@ -79,7 +79,7 @@ export function occurrenceKey(blockId: string, date: string, startTime: string):
   return `${blockId}|${date}|${startTime}`;
 }
 
-export function getAutoExecSettings(data: FocusAppData): {
+export function getAutoExecSettings(data: ControlAppData): {
   enabled: boolean;
   notifyLeadMinutes: number;
 } {
@@ -106,7 +106,7 @@ function isEligible(block: ScheduleBlock, modes: StudyMode[]): boolean {
  * `missedSkipReason` when their records exist; ancient ones need no record).
  */
 export function computeOccurrences(
-  data: FocusAppData,
+  data: ControlAppData,
   nowMs: number,
   horizonMs: number = DEFAULT_HORIZON_MS
 ): PolicyOccurrence[] {

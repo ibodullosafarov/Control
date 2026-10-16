@@ -18,6 +18,20 @@
     -moz-osx-font-smoothing: grayscale;
   }
 
+  /* Crisp tabular numerals for timers and counters */
+  .font-mono,
+  code,
+  pre,
+  kbd {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Subtle accessible keyboard focus ring */
+  :focus-visible {
+    outline: 2px solid rgba(56, 189, 248, 0.7);
+    outline-offset: 2px;
+  }
+
   /* Custom sleek minimalist liquid scrollbar */
   ::-webkit-scrollbar {
     width: 5px;

@@ -119,8 +119,8 @@ export function mergeImportedTasks(
 
 export class ObsidianService {
   async selectDirectory(): Promise<{ canceled: boolean; filePaths: string[] }> {
-    if (window.focusAPI?.selectDirectory) {
-      return await window.focusAPI.selectDirectory();
+    if (window.controlAPI?.selectDirectory) {
+      return await window.controlAPI.selectDirectory();
     }
     return { canceled: true, filePaths: [] };
   }
@@ -138,10 +138,10 @@ export class ObsidianService {
     modes: StudyMode[],
     config: ObsidianConfig
   ): Promise<ObsidianSyncResult> {
-    if (window.focusAPI?.syncTasksToObsidian) {
+    if (window.controlAPI?.syncTasksToObsidian) {
       syncing = true;
       try {
-        const res = await window.focusAPI.syncTasksToObsidian(tasks, modes, config);
+        const res = await window.controlAPI.syncTasksToObsidian(tasks, modes, config);
         if (res.success && config.syncFormat !== 'consolidated') {
           lastExportedIds = res.fileIds || [];
         } else if (res.success) {
@@ -163,15 +163,15 @@ export class ObsidianService {
   }
 
   async readTasks(config: ObsidianConfig): Promise<TasksMdReadResult> {
-    if (window.focusAPI?.readTasksFromObsidian) {
-      return await window.focusAPI.readTasksFromObsidian(config);
+    if (window.controlAPI?.readTasksFromObsidian) {
+      return await window.controlAPI.readTasksFromObsidian(config);
     }
     return { success: false, folder: '', tasks: [], error: 'Electron API is not available in browser mode.' };
   }
 
   async openFolder(folderPath: string): Promise<{ success: boolean; error?: string }> {
-    if (window.focusAPI?.openPath) {
-      return await window.focusAPI.openPath(folderPath);
+    if (window.controlAPI?.openPath) {
+      return await window.controlAPI.openPath(folderPath);
     }
     return { success: false, error: 'Electron API is not available in browser mode.' };
   }

@@ -14,7 +14,7 @@ import {
   type PolicyOccurrence,
   type StoredOccurrence,
 } from '../src/services/autoExecPolicy';
-import { FocusAppData, ScheduleBlock, StudyMode, UserSettings } from '../src/types';
+import { ControlAppData, ScheduleBlock, StudyMode, UserSettings } from '../src/types';
 
 const NOON = (() => {
   const d = new Date();
@@ -70,7 +70,7 @@ function makeData(
   blocks: ScheduleBlock[],
   settings: Partial<UserSettings> = {},
   modes: StudyMode[] = [makeMode()]
-): FocusAppData {
+): ControlAppData {
   return {
     modes,
     sessions: [],
@@ -87,7 +87,7 @@ function makeData(
       blockingEnabled: false,
       blockingStrategy: 'none',
       googleCalendar: { connected: false, calendarId: 'primary' },
-      minimalModeOnFocus: false,
+      minimalModeOnControl: false,
       autoExecute: { enabled: true, notifyLeadMinutes: 5 },
       ...settings,
     } as UserSettings,

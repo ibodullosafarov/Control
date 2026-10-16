@@ -7,5 +7,5 @@ if [ ! -d "dist" ] || [ ! -d "dist-electron" ]; then
   npm run build
 fi
 
-# Launch Focus
+# Launch Control
 ./node_modules/.bin/electron .

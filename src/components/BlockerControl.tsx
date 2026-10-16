@@ -41,16 +41,22 @@ export const BlockerControl: React.FC<BlockerControlProps> = ({
     setIsLoading(true);
     try {
       const s = await blockerClient.refreshStatus();
-      setStatus(s);
+      if (!cancelledRef.current) setStatus(s);
       const a = await blockerClient.refreshAppStatus();
-      setAppStatus(a);
+      if (!cancelledRef.current) setAppStatus(a);
     } finally {
-      setIsLoading(false);
+      if (!cancelledRef.current) setIsLoading(false);
     }
   };
 
+  const cancelledRef = React.useRef(false);
   useEffect(() => {
-    fetchStatus();
+    cancelledRef.current = false;
+    void fetchStatus().catch(() => undefined);
+    return () => {
+      cancelledRef.current = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleTestBlock = async () => {
@@ -219,7 +225,7 @@ export const BlockerControl: React.FC<BlockerControlProps> = ({
             >
               {status.isActive || appStatus.isActive
                 ? `Guarding ${status.blockedCount} websites & ${appStatus.blockedCount} applications`
-                : 'Shield activates automatically whenever you start a focus session'}
+                : 'Shield activates automatically whenever you start a control session'}
             </p>
           </div>
         </div>
@@ -302,7 +308,7 @@ export const BlockerControl: React.FC<BlockerControlProps> = ({
                 className="text-xs mt-0.5"
                 style={{ color: currentTheme.textSecondary }}
               >
-                {appStatus.blockedApps.length} applications will be force-quit & held shut during focus sessions
+                {appStatus.blockedApps.length} applications will be force-quit & held shut during control sessions
               </p>
             </div>
           </div>
@@ -342,7 +348,7 @@ export const BlockerControl: React.FC<BlockerControlProps> = ({
             className="text-xs font-mono"
             style={{ color: currentTheme.textMuted }}
           >
-            No apps blocked. Search above to force-quit applications during focus sessions.
+            No apps blocked. Search above to force-quit applications during control sessions.
           </p>
         )}
 
@@ -409,7 +415,7 @@ export const BlockerControl: React.FC<BlockerControlProps> = ({
             className="text-xs leading-relaxed"
             style={{ color: currentTheme.textSecondary }}
           >
-            Continuously watches for blocked applications. Any attempt to launch them during a focus session is terminated instantly via native macOS process control.
+            Continuously watches for blocked applications. Any attempt to launch them during a control session is terminated instantly via native macOS process control.
           </p>
         </div>
 

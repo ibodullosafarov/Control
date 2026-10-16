@@ -2,7 +2,7 @@
 
 Templates are reusable `.md` blueprints that live in your Obsidian vault. In Control they do **two** things:
 
-1. **Generate timed calendar events** — turn a routine (e.g. "Daily SAT") into real Day Planner sessions with start/end times, durations, timer and Focus Mode preferences. Generated sessions behave exactly like hand-created events: editable, startable, synced to Google Calendar.
+1. **Generate timed calendar events** — turn a routine (e.g. "Daily SAT") into real Day Planner sessions with start/end times, durations, timer and Control Mode preferences. Generated sessions behave exactly like hand-created events: editable, startable, synced to Google Calendar.
 2. **Generate Markdown day notes** (classic flow) — fill `Days/YYYY-MM-DD.md` with a checklist for the day.
 
 Templates are blueprints, never execution records: completing sessions never writes back into the template file.
@@ -65,7 +65,7 @@ default-start: 09:00
 - Questions: 50
 - Duration: 60m
 - Timer: true
-- Focus Mode: true
+- Control Mode: true
 - Mode: Deep Work
 
 ## Break
@@ -75,18 +75,18 @@ default-start: 09:00
 - Questions: 50
 - Duration: 60m
 - Timer: true
-- Focus Mode: true
+- Control Mode: true
 
 ## Break
 - Duration: 15m
 - Timer: false
-- Focus Mode: false
+- Control Mode: false
 
 ## Vocabulary
 - Items: 30
 - Duration: 30m
 - Timer: true
-- Focus Mode: true
+- Control Mode: true
 ```
 
 ### Frontmatter keys
@@ -107,8 +107,8 @@ default-start: 09:00
 | `Duration` | Yes (or `default-duration`) | Session length: `60m`, `90`, `1h`, `1h30m`, `1:30`. |
 | `Type` | No | `session` (default) or `break`. A heading exactly matching `break`, `rest`, `pause`, `breather`, `coffee` or `lunch` is a break without needing `Type`. |
 | `Timer` | No | `true`/`false` (`yes`/`no`, `1`/`0`, `on`/`off` work too). Default: on for sessions, off for breaks. Off dims the session's Start button. |
-| `Focus Mode` (or `Focus`) | No | `true`/`false`. Default: follow the mode's own rules. `false` suppresses website/app blocking for that session; `true` enforces it when the mode has blocklists. |
-| `Mode` | No | Focus mode by name (matched case-insensitively). Default: your default mode. Breaks prefer a mode literally named `Break`/`Rest` when one exists. |
+| `Control Mode` (or `Control`) | No | `true`/`false`. Default: follow the mode's own rules. `false` suppresses website/app blocking for that session; `true` enforces it when the mode has blocklists. |
+| `Mode` | No | Control mode by name (matched case-insensitively). Default: your default mode. Breaks prefer a mode literally named `Break`/`Rest` when one exists. |
 | `Questions` / `Problems` / `Words` / `Items` / `Cards` / `Pages` / `Sets` / `Reps` | No | Positive whole number, recorded as e.g. `50 questions` in the event description and daily note. |
 | `Count` | No | `Count: 50 questions` — number plus free-form label. |
 | `Description` / `Notes` | No | Extra text kept in the event description and daily note. Plain prose lines and unknown `Key:` lines are kept too. |
@@ -122,7 +122,7 @@ default-start: 09:00
 3. The **Generate schedule** dialog opens:
    - **Target date** (defaults to the selected day) and **start time** (defaults to `default-start`, else `09:00`).
    - Template `{{variables}}`, if any.
-   - Every session with its computed `HH:mm–HH:mm`, editable title, minutes, counts, Timer checkbox and Focus selector (`Follow mode`/`On`/`Off`). Overrides apply to this run only — the `.md` file is never modified.
+   - Every session with its computed `HH:mm–HH:mm`, editable title, minutes, counts, Timer checkbox and Control selector (`Follow mode`/`On`/`Off`). Overrides apply to this run only — the `.md` file is never modified.
 4. The preview shows total minutes and end time. Problems are explicit:
    - **Template problems** (red) — e.g. a section without `Duration`. Fix the file in Obsidian; generation stays disabled until then.
    - **Overlaps** (amber) — existing events are listed with times. They are never moved or deleted; choose **Add … sessions anyway** or Cancel.
@@ -134,10 +134,10 @@ default-start: 09:00
 
 Real `ScheduleBlock` events: visible in Day/Week views, movable, editable, deletable, with `originTemplate` (template name) and `originTemplateAppliedAt` recorded on each block. Editing a generated event never touches the template; editing the template never rewrites generated events (re-apply explicitly if you want the new version).
 
-## 6. Timers and Focus Mode
+## 6. Timers and Control Mode
 
 - Press the play button on any generated session to start it through the normal timer flow (durations come from the block). Sessions with `Timer: false` show a dimmed, disabled Start button.
-- `Focus Mode: false` suppresses website/app blocking for that session; `true` enforces it when the mode has blocklists; unset follows the mode. Break phases always unblock, as usual.
+- `Control Mode: false` suppresses website/app blocking for that session; `true` enforces it when the mode has blocklists; unset follows the mode. Break phases always unblock, as usual.
 - Generating a schedule never starts timers, never touches blocking, and never interrupts an active session — even for tomorrow's date. Switching sessions mid-run follows the app's existing single-session guard.
 
 ## 7. Daily notes and progress
@@ -153,7 +153,7 @@ Generating a schedule writes a section to `Control/Days/YYYY-MM-DD.md`:
 - Only that section is touched: prose, checklists, frontmatter and other sections are preserved verbatim. Re-applying **replaces** the old generated section instead of stacking duplicates. A missing day file is created with minimal `type: control-day` frontmatter.
 - Lines are plain bullets on purpose — completion lives on the calendar events, so the note can't disagree with the planner about "done".
 - If no vault is configured, or the note write fails, the schedule is still safe: events are persisted first, the note second, and you'll get a notice explaining what happened.
-- Progress survives restarts because it lives on the calendar events (persisted in `~/.focus-app/data.json`), exactly like hand-created events.
+- Progress survives restarts because it lives on the calendar events (persisted in `~/.control-app/data.json`), exactly like hand-created events.
 
 ## 8. Google Calendar sync
 
@@ -183,16 +183,16 @@ Generated sessions sync exactly like hand-created Day Planner events — no sepa
 | "names no mode" / unknown mode | Add `Mode: {Exact Mode Name}` (built-ins and custom modes both work) or pick one in the apply dialog — nothing is auto-substituted. |
 | Sessions didn't sync to Google | They sync as ordinary events on the next run; check Settings → Google Calendar status, sync errors, and the 45-day/import rules there. |
 | Note not updated | Events are still safe; reconnect the vault or check write permissions, then re-apply (section replacement keeps it duplicate-free). |
-| Scheduled session never started | Check Settings → Automatic Focus Execution is enabled, the event has a valid mode and timer enabled, and no manual session was running (it always wins). States and skip reasons are listed there. |
+| Scheduled session never started | Check Settings → Automatic Control Execution is enabled, the event has a valid mode and timer enabled, and no manual session was running (it always wins). States and skip reasons are listed there. |
 | No reminder notification | The section reports when notifications are unavailable; on macOS check System Settings → Notifications → Control. |
-| Event length flagged vs focus length | Single-block mode events should match the mode's Work minutes — use Snap, fix the time, or pick another mode. Multi-cycle modes are exempt by design. |
+| Event length flagged vs control length | Single-block mode events should match the mode's Work minutes — use Snap, fix the time, or pick another mode. Multi-cycle modes are exempt by design. |
 
 ## 11. Current limitations
 
 - One schedule per generation run, same-date only (no cross-midnight schedules).
 - Checklist (`- [ ]`) lines are notes, not sessions — each `##` section is exactly one session.
 - Overlap detection compares same-date `HH:mm` ranges; overnight events spanning midnight may not be flagged.
-- `Focus Mode: true` still needs blocklists on the resolved mode to enforce anything.
+- `Control Mode: true` still needs blocklists on the resolved mode to enforce anything.
 - Per-run overrides never write back to the template file.
 - The Templates manager lists name/counts/dates; `description` is stored but not yet displayed there.
 - Automatic execution needs the app running (open, hidden, or menu-bar); fully quitting stops it, and missed starts older than 10 minutes are skipped, never launched late.
@@ -253,13 +253,13 @@ Validation failures create zero events (atomic).
 
 ### Single-block modes and matching durations
 
-A study mode with **Cycles = 1** represents exactly one focus block: create one in the Modes manager
-(e.g. `25 English` with 30 minutes of Work), and it runs a single focus cycle with no trailing break
+A study mode with **Cycles = 1** represents exactly one control block: create one in the Modes manager
+(e.g. `25 English` with 30 minutes of Work), and it runs a single control cycle with no trailing break
 timer. Multi-cycle modes are unchanged — mid-run work phases still take breaks.
 
 When a single-block (non-chill, one-cycle) mode is resolved, each scheduled event should last exactly
-its focus duration — a 30-minute `25 English` belongs in a 30-minute event. The apply dialogs check
-this and warn per event (“SAT English is scheduled 45m, but single-block mode 25 English focuses
+its control duration — a 30-minute `25 English` belongs in a 30-minute event. The apply dialogs check
+this and warn per event (“SAT English is scheduled 45m, but single-block mode 25 English controls
 30m”), with a one-click **Snap to 30m** fix. Mismatches never block and nothing is stretched or shifted
 automatically; multi-cycle modes are never flagged. In the timed dialog, adjust any start/end time
 directly; in the sequencing dialog, adjust Minutes.
@@ -269,8 +269,8 @@ a trailing timer inside a single-block session. A finished one-cycle session com
 back-to-back template events (e.g. ending 14:25, next starting 14:30) hand off cleanly, including under
 automatic execution, which starts exactly one cycle per event and finishes it at the event's end.
 
-Example — single-block modes `25 English` (30 min focus), `25 Math` (20 min) and `30 Vocab` (15 min),
-each event matching its focus length:
+Example — single-block modes `25 English` (30 min control), `25 Math` (20 min) and `30 Vocab` (15 min),
+each event matching its control length:
 
 ```md
 # {{date}} Day Plan
@@ -345,14 +345,14 @@ Timed application offers an explicit strategy when the target date already has e
 
 ## 15. Automatic study-day execution
 
-Settings → **Automatic Focus Execution** turns the Day Planner into an executor:
+Settings → **Automatic Control Execution** turns the Day Planner into an executor:
 
 - **Enable** the toggle and set the reminder lead time (default **5 minutes**, 1–120).
 - 5 (or N) minutes before each eligible session, Control sends a native macOS notification —
   e.g. “Time to lock in. English 50 starts in 5 minutes.” — at most once per occurrence, never as a stale backlog.
-- At the start time, Control launches the session through the normal focus engine with the event's
+- At the start time, Control launches the session through the normal control engine with the event's
   mode (durations, cycles, blocklists) and timer, visible in the timer tab and menu bar. Single-block
-  modes run exactly one focus cycle — no extra cycles, no automatic break spilling into the next event.
+  modes run exactly one control cycle — no extra cycles, no automatic break spilling into the next event.
 - At the scheduled end, the auto-started session finishes through the normal completion path
   (blockers cleaned up, history recorded) and its planner block is marked completed. Because one-cycle
   sessions already end right after their work phase, back-to-back events hand off with the app ready
