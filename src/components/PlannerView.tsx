@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { 
   Calendar as CalendarIcon, ChevronLeft, ChevronRight, Plus, Play, Trash2, 
-  Clock, CheckCircle2, ArrowLeft, Download, RefreshCw, Sparkles, X, Edit3,
+  Clock, CheckCircle2, ArrowLeft, RefreshCw, Sparkles, X, Edit3,
   CalendarCheck, ListPlus, Flame, MoveRight, PanelLeft, Check, FolderSync,
   Layers, Target, FileText
 } from 'lucide-react';
-import { StudyMode, ModeFolder, Exam, ControlSession, ThemeId, ScheduleBlock, DayPlan, GoogleCalendarConfig, TaskItem, ObsidianConfig } from '../types';
+import { StudyMode, ModeFolder, ControlSession, ThemeId, ScheduleBlock, DayPlan, GoogleCalendarConfig, TaskItem, ObsidianConfig } from '../types';
 import { THEMES } from '../styles/themes';
 import { DynamicIcon } from './DynamicIcon';
 import { obsidianService } from '../services/obsidian';
@@ -29,16 +29,14 @@ import {
   toLocalDateStr,
 } from '../services/calendarGrid';
 import { useGoogleSyncStatus } from '../services/googleSync';
+import { clampCycles, fitCyclesToDuration, sessionWallMinutes } from '../services/sessionFlow';
 import { DayPlanMarkdownView } from './DayPlanMarkdownView';
-import { ExamsView } from './ExamsView';
 import { groupModesByFolder } from '../services/modeFolders';
 import { ModeViewToggle, useModeViewPref } from './ModeViewToggle';
 
 interface PlannerViewProps {
   modes: StudyMode[];
   modeFolders?: ModeFolder[];
-  exams?: Exam[];
-  onSaveExams?: (exams: Exam[]) => void;
   sessions?: ControlSession[];
   plans: Record<string, DayPlan>;
   tasks?: TaskItem[];
@@ -85,8 +83,6 @@ function formatTimeRange12h(startTime: string, endTime: string): string {
 export const PlannerView: React.FC<PlannerViewProps> = ({
   modes,
   modeFolders,
-  exams,
-  onSaveExams,
   sessions,
   plans,
   tasks = [],
@@ -163,11 +159,28 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
   const DAY_MIN_EVENT_HEIGHT = 24;
   const WEEK_MIN_EVENT_HEIGHT = 20;
 
-  const todayStr = useMemo(() => toLocalDateStr(new Date()), []);
-  const [selectedDate, setSelectedDate] = useState<string>(todayStr);
+  // Live clock. It drives the red current-time line AND the definition of
+  // "today", so an app left open across midnight (or woken from sleep) shows
+  // the real date instead of the day it happened to be opened.
+  const [now, setNow] = useState<Date>(new Date());
+
+  // "Today" is always re-derived from the live clock — never frozen at mount.
+  const todayStr = toLocalDateStr(now);
+  const [selectedDate, setSelectedDate] = useState<string>(() => toLocalDateStr(new Date()));
+
+  // When the calendar day rolls over, follow it forward if the user was still
+  // parked on the previous "today" (never yank them off a day they navigated to).
+  const prevTodayRef = useRef(todayStr);
+  useEffect(() => {
+    const prev = prevTodayRef.current;
+    if (prev !== todayStr) {
+      prevTodayRef.current = todayStr;
+      setSelectedDate((cur) => (cur === prev ? todayStr : cur));
+    }
+  }, [todayStr]);
 
   // View switch: 'day', 'week', or 'plan' (Markdown day plan)
-  const [calendarView, setCalendarView] = useState<'day' | 'week' | 'plan' | 'exams'>('day');
+  const [calendarView, setCalendarView] = useState<'day' | 'week' | 'plan'>('day');
 
   // Sidebar visibility toggle
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
@@ -200,11 +213,20 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
     });
   };
 
-  // Live real-time clock for Apple red current-time marker
-  const [now, setNow] = useState<Date>(new Date());
+  // Tick the clock for the Apple red current-time marker. Also refresh
+  // immediately on focus/wake so the marker and "today" snap back to reality
+  // without waiting for the next interval.
   useEffect(() => {
-    const timer = setInterval(() => setNow(new Date()), 30000);
-    return () => clearInterval(timer);
+    const tick = () => setNow(new Date());
+    const timer = setInterval(tick, 30000);
+    const refresh = () => setNow(new Date());
+    document.addEventListener('visibilitychange', refresh);
+    window.addEventListener('focus', refresh);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', refresh);
+      window.removeEventListener('focus', refresh);
+    };
   }, []);
 
   const existingPlan = plans[selectedDate];
@@ -238,9 +260,19 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
   const [blockDate, setBlockDate] = useState(selectedDate);
   const [blockStartTime, setBlockStartTime] = useState('09:00');
   const [blockEndTime, setBlockEndTime] = useState('10:00');
-  const [blockModeId, setBlockModeId] = useState<string>(modes[0]?.id || 'mode-deep-work');
+  const [blockModeId, setBlockModeId] = useState<string>('');
   const [blockCycles, setBlockCycles] = useState<number>(1);
   const [selectedTaskId, setSelectedTaskId] = useState<string>('');
+
+  // Schedule-cycles modal: split one task into per-cycle planner blocks, each
+  // individually movable, each linked back to the task.
+  const [cycleModalTask, setCycleModalTask] = useState<TaskItem | null>(null);
+  const [cycleModalModeId, setCycleModalModeId] = useState<string>(modes[0]?.id || 'mode-deep-work');
+  const [cycleModalCount, setCycleModalCount] = useState<number>(1);
+  const [cycleModalGap, setCycleModalGap] = useState<number>(7);
+  const [cycleModalStart, setCycleModalStart] = useState<string>('09:00');
+  // Free duration used when the task is scheduled with no mode.
+  const [cycleModalDuration, setCycleModalDuration] = useState<number>(60);
 
   // Auto-scroll calendar grid to 8:00 AM or current time on mount
   const gridScrollRef = useRef<HTMLDivElement>(null);
@@ -424,15 +456,36 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
     dragCleanupRef.current = () => {};
   };
 
-  // S-06: single-cycle blocks keep timer == wall on move/resize so the
-  // event and the timer never disagree. Multi-cycle blocks keep their shape
-  // (wall mismatch is surfaced by validateSingleBlockDurations elsewhere).
-  const syncSingleCycleWall = (b: ScheduleBlock, startTime: string, endTime: string): ScheduleBlock => {
-    if ((b.cycles || 1) !== 1 || b.timerEnabled === false) return { ...b, startTime, endTime };
+  // R-04: the calendar event is exactly the wall length the timer will run.
+  //  • Single-cycle blocks: work = wall, no trailing break (unchanged).
+  //  • Multi-cycle blocks: a resize snaps to the nearest whole number of mode
+  //    cycles and the event is re-laid to that exact wall, so a block can
+  //    never claim a length the session will not actually run.
+  const syncTimerWall = (b: ScheduleBlock, startTime: string, endTime: string): ScheduleBlock => {
+    // Free-form plan block (no mode) or a template's timer-off block: the event
+    // is just a time range — never derive a timer shape from it.
+    if (b.timerEnabled === false || !b.modeId) return { ...b, startTime, endTime };
     const [sH, sM] = startTime.split(':').map(Number);
     const [eH, eM] = endTime.split(':').map(Number);
-    const wall = Math.max(15, (eH * 60 + eM) - (sH * 60 + sM));
-    return { ...b, startTime, endTime, workDuration: wall, breakDuration: 0 };
+    if ((b.cycles || 1) <= 1) {
+      const wall = Math.max(15, (eH * 60 + eM) - (sH * 60 + sM));
+      return { ...b, startTime, endTime, workDuration: wall, breakDuration: 0 };
+    }
+    const mode = modes.find((m) => m.id === b.modeId);
+    const w = Math.max(1, b.workDuration || mode?.workDuration || 25);
+    const brk = Math.max(0, b.breakDuration ?? mode?.breakDuration ?? 5);
+    const dur = Math.max(0, (eH * 60 + eM) - (sH * 60 + sM));
+    const cycles = fitCyclesToDuration(dur, w, brk);
+    const wall = sessionWallMinutes(w, brk, cycles);
+    const startMins = sH * 60 + sM;
+    return {
+      ...b,
+      startTime,
+      endTime: minutesToHHMM(Math.min(24 * 60 - 1, startMins + wall)),
+      cycles,
+      workDuration: w,
+      breakDuration: brk,
+    };
   };
 
   const commitMove = (
@@ -456,19 +509,19 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
         () => `block-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`
       );
       const target = currentPlans[toDate]?.blocks || (toDate === selDate ? blocksRef.current : []);
-      persist(toDate, [...target, copy]);
+      persist(toDate, [...target, syncTimerWall(copy, copy.startTime, copy.endTime)]);
       return;
     }
     if (toDate === block.date) {
       const list = currentPlans[block.date]?.blocks || [];
       if (!list.some((b) => b.id === block.id)) return;
-      persist(block.date, list.map((b) => (b.id === block.id ? syncSingleCycleWall(b, startTime, endTime) : b)));
+      persist(block.date, list.map((b) => (b.id === block.id ? syncTimerWall(b, startTime, endTime) : b)));
     } else {
       const src = currentPlans[block.date]?.blocks || [];
       if (!src.some((b) => b.id === block.id)) return;
       persist(block.date, src.filter((b) => b.id !== block.id));
       const target = currentPlans[toDate]?.blocks || [];
-      persist(toDate, [...target, syncSingleCycleWall({ ...block, date: toDate }, startTime, endTime)]);
+      persist(toDate, [...target, syncTimerWall({ ...block, date: toDate }, startTime, endTime)]);
     }
   };
 
@@ -478,7 +531,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
     if (!list.some((b) => b.id === block.id)) return;
     persistRef.current(
       block.date,
-      list.map((b) => (b.id === block.id ? syncSingleCycleWall(b, b.startTime, minutesToHHMM(end)) : b))
+      list.map((b) => (b.id === block.id ? syncTimerWall(b, b.startTime, minutesToHHMM(end)) : b))
     );
   };
 
@@ -488,7 +541,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
     if (!list.some((b) => b.id === block.id)) return;
     persistRef.current(
       block.date,
-      list.map((b) => (b.id === block.id ? syncSingleCycleWall(b, minutesToHHMM(start), b.endTime) : b))
+      list.map((b) => (b.id === block.id ? syncTimerWall(b, minutesToHHMM(start), b.endTime) : b))
     );
   };
 
@@ -498,7 +551,9 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
     setBlockDate(date);
     setBlockStartTime(minutesToHHMM(start));
     setBlockEndTime(minutesToHHMM(end));
-    setBlockModeId(modes[0]?.id || 'mode-deep-work');
+    // Planning never forces a mode: a fresh block is a plain time block unless
+    // the user deliberately picks a mode tile below.
+    setBlockModeId('');
     setBlockCycles(1);
     setSelectedTaskId('');
     setIsEditModalOpen(true);
@@ -770,47 +825,69 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
   };
 
   // Save new or edited block
-  // Duration glossary (B-06/B-10): the calendar event is the WALL interval
-  // [start,end). Stored work/break/cycles describe the timer that runs inside
-  // it: wall ≈ cycles*work + (cycles-1)*break. Manual blocks default to a
-  // single honest cycle (work = wall, break = 0) instead of an invented
-  // 80/20 split, so the event and the timer agree.
+  // Duration glossary (B-06/B-10, R-04): the calendar event is the WALL
+  // interval [start,end). Stored work/break/cycles describe the timer that
+  // runs inside it, and BOTH are derived here from one source of truth so the
+  // plan can never claim a length the session will not run:
+  //  • cycle blocks (linked to a task) are fixed at 1 honest cycle.
+  //  • multi-cycle blocks adopt the mode's shape: end = start + wall(cycles).
+  //  • single-cycle blocks are honest: work = wall, no trailing break.
   const handleSaveModalBlock = () => {
-    const chosenMode = modes.find((m) => m.id === blockModeId) || modes[0];
-    const [sH, sM] = blockStartTime.split(':').map(Number);
-    const [eH, eM] = blockEndTime.split(':').map(Number);
-    const durationMins = Math.max(15, (eH * 60 + eM) - (sH * 60 + sM));
-
-    const finalTitle = blockTitle.trim() || chosenMode.name;
+    const chosenMode = modes.find((m) => m.id === blockModeId);
+    const noMode = !chosenMode;
+    const finalTitle = blockTitle.trim() || chosenMode?.name || 'Planned block';
     const targetDate = blockDate || selectedDate;
     const datePlan = plans[targetDate];
     const targetDateBlocks = datePlan?.blocks || (targetDate === selectedDate ? blocks : []);
-    // Single-cycle default: the timer fills the visible event exactly.
-    const defaultWork = durationMins;
-    const defaultBreak = 0;
+    const editingBlock = editingBlockId ? targetDateBlocks.find((b) => b.id === editingBlockId) : null;
+    const isCycleBlock = !!editingBlock?.taskId;
+
+    const cycles = isCycleBlock ? 1 : noMode ? 1 : clampCycles(blockCycles, 1);
+    const isChill = !!chosenMode?.isChillMode;
+    const multi = !noMode && cycles > 1 && !isChill;
+    // The calendar event is the WALL interval [start,end). With no mode it is
+    // just that range (no timer). With a mode, a single cycle is honest
+    // (work = exactly the planned length, so the timer matches the estimate);
+    // multi-cycle blocks adopt the mode's shape so plan and timer agree.
+    const singleWall = Math.max(1, hhmmToMinutes(blockEndTime) - hhmmToMinutes(blockStartTime));
+    const workDuration = noMode ? 0 : multi ? chosenMode!.workDuration : singleWall;
+    const breakDuration = noMode ? 0 : multi ? chosenMode!.breakDuration : 0;
+    const wall = multi ? sessionWallMinutes(workDuration, breakDuration, cycles) : singleWall;
+    const effectiveEnd = multi
+      ? minutesToHHMM(Math.min(24 * 60 - 1, hhmmToMinutes(blockStartTime) + wall))
+      : blockEndTime;
+
+    // Preserve a template's timer-off rest block when its mode is unchanged;
+    // switching a free block to a mode turns the timer back on.
+    const editingHadMode = !!editingBlock?.modeId;
+    const timerEnabled = noMode
+      ? false
+      : editingHadMode
+        ? editingBlock?.timerEnabled
+        : undefined;
+
+    const modeFields = {
+      modeId: chosenMode?.id || '',
+      modeName: finalTitle,
+      modeIcon: chosenMode?.icon || '',
+      modeColor: chosenMode?.color || '',
+      workDuration,
+      breakDuration,
+      cycles,
+      timerEnabled,
+    };
 
     if (editingBlockId) {
-      // Update existing block — preserve the timer shape unless the user
-      // changed the mode or cycle count; never invent an 80/20 split.
+      // Update existing block — keep its task linkage when it is a cycle block.
       const updated = targetDateBlocks.map((b) => {
-        if (b.id === editingBlockId) {
-          const modeChanged = b.modeId !== chosenMode.id;
-          const cycles = blockCycles || b.cycles || 1;
-          return {
-            ...b,
-            date: targetDate,
-            startTime: blockStartTime,
-            endTime: blockEndTime,
-            modeId: chosenMode.id,
-            modeName: finalTitle,
-            modeIcon: chosenMode.icon,
-            modeColor: chosenMode.color,
-            workDuration: modeChanged || b.workDuration == null ? (cycles === 1 ? defaultWork : chosenMode.workDuration) : b.workDuration,
-            breakDuration: modeChanged || b.breakDuration == null ? (cycles === 1 ? defaultBreak : chosenMode.breakDuration) : b.breakDuration,
-            cycles,
-          };
-        }
-        return b;
+        if (b.id !== editingBlockId) return b;
+        return {
+          ...b,
+          date: targetDate,
+          startTime: blockStartTime,
+          endTime: effectiveEnd,
+          ...modeFields,
+        };
       });
       persistBlocksForDate(targetDate, updated);
     } else {
@@ -819,15 +896,9 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
         id: `block-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
         date: targetDate,
         startTime: blockStartTime,
-        endTime: blockEndTime,
-        modeId: chosenMode.id,
-        modeName: finalTitle,
-        modeIcon: chosenMode.icon,
-        modeColor: chosenMode.color,
-        workDuration: blockCycles > 1 ? chosenMode.workDuration : defaultWork,
-        breakDuration: blockCycles > 1 ? chosenMode.breakDuration : defaultBreak,
-        cycles: blockCycles,
+        endTime: effectiveEnd,
         status: 'approved',
+        ...modeFields,
       };
       persistBlocksForDate(targetDate, [...targetDateBlocks, newBlock]);
       // No extra onAddTask call here: persist → onSavePlan already mirrors
@@ -838,13 +909,69 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
     setIsEditModalOpen(false);
   };
 
+  // ── Block-editor cycle↔duration helpers (R-04) ─────────────────────────
+  // Editing cycles moves the end time to exactly that many mode cycles;
+  // editing the times snaps the cycle count to the nearest whole fit. The
+  // event always equals wall = cycles*work + (cycles-1)*break (single-cycle
+  // blocks: work = wall), so the plan and the timer cannot disagree.
+  const editorMode = modes.find((m) => m.id === blockModeId);
+  const editorIsChill = !!editorMode?.isChillMode;
+
+  const editorEndForCycles = (startTime: string, cycles: number): string => {
+    const w = Math.max(1, editorMode?.workDuration ?? 25);
+    const b = Math.max(0, editorMode?.breakDuration ?? 5);
+    return minutesToHHMM(
+      Math.min(24 * 60 - 1, hhmmToMinutes(startTime) + sessionWallMinutes(w, b, Math.max(1, cycles)))
+    );
+  };
+
+  const editorCyclesForRange = (startTime: string, endTime: string): number => {
+    const w = Math.max(1, editorMode?.workDuration ?? 25);
+    const b = Math.max(0, editorMode?.breakDuration ?? 5);
+    return fitCyclesToDuration(Math.max(0, hhmmToMinutes(endTime) - hhmmToMinutes(startTime)), w, b);
+  };
+
+  const handleEditorCyclesStep = (delta: number) => {
+    const next = clampCycles(blockCycles + delta, 1);
+    setBlockCycles(next);
+    if (next > 1 && !editorIsChill) setBlockEndTime(editorEndForCycles(blockStartTime, next));
+  };
+
+  const handleEditorStartChange = (value: string) => {
+    setBlockStartTime(value);
+    if (editorMode && blockCycles > 1 && !editorIsChill) setBlockEndTime(editorEndForCycles(value, blockCycles));
+  };
+
+  const handleEditorEndChange = (value: string) => {
+    if (editorMode && blockCycles > 1 && !editorIsChill) {
+      const next = editorCyclesForRange(blockStartTime, value);
+      setBlockCycles(next);
+      setBlockEndTime(editorEndForCycles(blockStartTime, next));
+    } else {
+      setBlockEndTime(value);
+    }
+  };
+
+  const handleEditorModeChange = (modeId: string) => {
+    setBlockModeId(modeId);
+    const m = modes.find((x) => x.id === modeId);
+    if (m && !m.isChillMode && blockCycles > 1) {
+      const w = Math.max(1, m.workDuration);
+      const b = Math.max(0, m.breakDuration);
+      setBlockEndTime(
+        minutesToHHMM(Math.min(24 * 60 - 1, hhmmToMinutes(blockStartTime) + sessionWallMinutes(w, b, blockCycles)))
+      );
+    }
+  };
+
   const handleDeleteBlock = (block: ScheduleBlock, e: React.MouseEvent) => {
     e.stopPropagation();
     // S-13: confirm downstream effects instead of silent delete.
     const bits: string[] = [];
     if (block.googleCalendarEventId) bits.push('linked Google event');
     if (block.timerEnabled !== false) bits.push('scheduled auto-run');
-    bits.push('mirrored task');
+    if (block.taskId) bits.push('its link to the task cycle');
+    else bits.push('mirrored task');
     if (!confirm(`Delete "${block.modeName}" (${block.startTime}–${block.endTime})?\n\nThis also removes: ${bits.join(', ')}. Completed mirrored tasks are kept.`)) return;
     const targetDate = block.date || selectedDate;
     const datePlan = plans[targetDate];
@@ -911,138 +1038,200 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
     }
   };
 
+  // Cycle blocks already placed (any day), per task. Used to know how many of
+  // a task's cycles still need a slot (and which cycle number to label the
+  // next block with). The selected day uses the live local `blocks`; other
+  // days come from persisted plans.
+  const cyclePlacementBlocks = useMemo(() => {
+    const out: ScheduleBlock[] = [];
+    for (const [date, plan] of Object.entries(plans)) {
+      if (date === selectedDate) continue;
+      for (const b of plan.blocks || []) {
+        if (b.taskId && b.cycleIndex != null) out.push(b);
+      }
+    }
+    for (const b of blocks) {
+      if (b.taskId && b.cycleIndex != null) out.push(b);
+    }
+    return out;
+  }, [plans, selectedDate, blocks]);
+
+  const placedCyclesByTask = useMemo(() => {
+    const map = new Map<string, number[]>();
+    for (const b of cyclePlacementBlocks) {
+      const arr = map.get(b.taskId as string) || [];
+      arr.push(b.cycleIndex as number);
+      map.set(b.taskId as string, arr);
+    }
+    return map;
+  }, [cyclePlacementBlocks]);
+
+  const taskCyclePlan = (task: TaskItem) => {
+    const total = typeof task.cycles === 'number' && task.cycles > 1 ? Math.floor(task.cycles) : 1;
+    const done = Math.max(0, task.cyclesCompleted || 0);
+    const placed = placedCyclesByTask.get(task.id) || [];
+    const base = Math.max(done, placed.length ? Math.max(...placed) : 0);
+    return {
+      total,
+      done,
+      placedCount: placed.length,
+      /** Cycle number the next scheduled block should carry. */
+      nextIndex: Math.min(total, base + 1),
+      /** Cycles still without a block today. */
+      remaining: Math.max(0, total - base),
+    };
+  };
+
   // Tasks already living on the calendar (source === 'calendar') must not be
   // scheduled again — scheduling them a second time created a second block
-  // plus a second mirrored task. Only manual tasks are schedulable.
+  // plus a second mirrored task. A manual task whose cycles are all already
+  // placed today is also excluded.
   const unscheduledTasks = useMemo(
-    () => (tasks || []).filter((t) => !t.completed && t.source !== 'calendar'),
-    [tasks]
+    () =>
+      (tasks || []).filter((t) => {
+        if (t.completed || t.source === 'calendar') return false;
+        const total = typeof t.cycles === 'number' && t.cycles > 1 ? Math.floor(t.cycles) : 1;
+        const placed = (placedCyclesByTask.get(t.id) || []).length;
+        return placed < total;
+      }),
+    [tasks, placedCyclesByTask]
   );
 
-  // Quick schedule a task into the next open slot
+  // Quick schedule: opens the cycle picker pre-filled for this task (name,
+  // mode, remaining cycles) so each cycle becomes its own movable block.
   const handleScheduleTask = (task: TaskItem) => {
     if (task.source === 'calendar') {
       setSyncFeedback({ message: 'That task is already on the calendar.', type: 'info' });
       return;
     }
-    const taskMode = modes.find((m) => m.id === task.modeId) || modes[0];
-    const duration = taskMode.workDuration || 45;
+    const taskMode = task.modeId ? modes.find((m) => m.id === task.modeId) : undefined;
+    // "Estimated time" of the task: its estimate, else the mode's wall, else 45.
+    const estimate = task.estimateMinutes && task.estimateMinutes > 0 ? task.estimateMinutes : undefined;
+    const duration = estimate ?? taskMode?.workDuration ?? 45;
+    const plan = taskCyclePlan(task);
 
-    // Find first free slot after 09:00
+    // Find first free slot after 09:00 as the suggested first cycle start.
     let candidateStartMins = 9 * 60;
     const sorted = [...blocks].sort((a, b) => a.startTime.localeCompare(b.startTime));
-
     for (const b of sorted) {
       const [bStartH, bStartM] = b.startTime.split(':').map(Number);
       const [bEndH, bEndM] = b.endTime.split(':').map(Number);
       const bStart = bStartH * 60 + bStartM;
       const bEnd = bEndH * 60 + bEndM;
-
-      if (candidateStartMins + duration <= bStart) {
-        break;
-      }
-      if (candidateStartMins < bEnd) {
-        candidateStartMins = bEnd + 10; // 10m buffer
-      }
+      if (candidateStartMins + duration <= bStart) break;
+      if (candidateStartMins < bEnd) candidateStartMins = bEnd + 10;
     }
+    if (candidateStartMins > 24 * 60 - duration) candidateStartMins = 9 * 60;
 
-    const startH = Math.floor(candidateStartMins / 60);
-    const startM = candidateStartMins % 60;
-    const endMins = candidateStartMins + duration;
-    if (endMins > 24 * 60) {
-      setSyncFeedback({ message: 'No free slot before midnight — shorten or move a block.', type: 'error' });
-      return;
-    }
-    const endH = Math.floor(endMins / 60);
-    const endM = endMins % 60;
-
-    const sTime = `${String(startH).padStart(2, '0')}:${String(startM).padStart(2, '0')}`;
-    const eTime = `${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`;
-
-    const newBlock: ScheduleBlock = {
-      id: `block-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-      date: selectedDate,
-      startTime: sTime,
-      endTime: eTime,
-      modeId: taskMode.id,
-      modeName: task.title,
-      modeIcon: taskMode.icon,
-      modeColor: taskMode.color,
-      workDuration: taskMode.workDuration,
-      breakDuration: taskMode.breakDuration,
-      cycles: 1,
-      status: 'approved',
-    };
-
-    persistBlocksForDate(selectedDate, [...blocks, newBlock]);
-    setSyncFeedback({
-      message: `Scheduled "${stripDateSuffix(task.title)}" at ${formatTime12h(sTime)}!`,
-      type: 'success',
-    });
+    setCycleModalTask(task);
+    // A task with no mode (or one pointing at a deleted mode) schedules as a
+    // free-form block by default; picking a mode opts into cycles + timer.
+    setCycleModalModeId(taskMode?.id || '');
+    setCycleModalCount(Math.max(1, plan.remaining));
+    setCycleModalGap(Math.max(0, taskMode?.breakDuration ?? 7));
+    setCycleModalDuration(duration);
+    setCycleModalStart(minutesToHHMM(candidateStartMins));
   };
 
-  // Auto-pack all pending tasks into calendar
-  const handleAutoScheduleFromTasks = () => {
-    const pendingTasks = unscheduledTasks;
-    if (pendingTasks.length === 0) {
-      setSyncFeedback({ message: 'No pending tasks in queue to schedule.', type: 'info' });
+  // Confirm the cycle picker: creates ONE movable block per cycle, all linked
+  // to the task (taskId) so starting any of them credits the task, shows
+  // "cycle x of z", and marks exactly that cycle done in the planner.
+  //
+  // With no mode selected the task is scheduled as a single free-form block:
+  // just a time range that starts no timer and blocks nothing.
+  const handleConfirmScheduleCycles = () => {
+    const task = cycleModalTask;
+    if (!task) return;
+    const taskMode = modes.find((m) => m.id === cycleModalModeId);
+
+    if (!taskMode) {
+      const start = hhmmToMinutes(cycleModalStart);
+      const dur = Math.max(1, Math.min(24 * 60, Math.round(cycleModalDuration) || 60));
+      const end = Math.min(24 * 60 - 1, start + dur);
+      if (end <= start || start >= 24 * 60) {
+        setSyncFeedback({
+          message: 'That time does not fit before midnight — pick an earlier start or a shorter duration.',
+          type: 'error',
+        });
+        return;
+      }
+      const block: ScheduleBlock = {
+        id: `block-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        date: selectedDate,
+        startTime: minutesToHHMM(start),
+        endTime: minutesToHHMM(end),
+        modeId: '',
+        modeName: stripDateSuffix(task.title),
+        modeIcon: '',
+        modeColor: '',
+        workDuration: 0,
+        breakDuration: 0,
+        cycles: 1,
+        status: 'approved',
+        timerEnabled: false,
+        taskId: task.id,
+        taskTitle: task.title,
+      };
+      persistBlocksForDate(selectedDate, [...blocks, block]);
+      setSyncFeedback({
+        message: `Scheduled "${stripDateSuffix(task.title)}" — just planned time, no mode. Drag it to reposition.`,
+        type: 'success',
+      });
+      setCycleModalTask(null);
       return;
     }
 
-    let cursorMins = 9 * 60; // Start at 9:00 AM
+    const plan = taskCyclePlan(task);
+    const count = Math.max(1, Math.min(12, cycleModalCount));
+    const work = Math.max(1, taskMode.workDuration);
+    const gap = Math.max(0, cycleModalGap);
+    let cursor = hhmmToMinutes(cycleModalStart);
+
     const newBlocks: ScheduleBlock[] = [];
-
-    for (const task of pendingTasks) {
-      const taskMode = modes.find((m) => m.id === task.modeId) || modes[0];
-      const dur = taskMode.workDuration || 45;
-      const brk = taskMode.breakDuration || 10;
-
-      const endMins = cursorMins + dur;
-      if (endMins > 24 * 60) break; // stop at midnight instead of emitting "24:xx"
-      const startH = Math.floor(cursorMins / 60);
-      const startM = cursorMins % 60;
-      const endH = Math.floor(endMins / 60);
-      const endM = endMins % 60;
-
+    for (let i = 0; i < count; i++) {
+      const idx = plan.nextIndex + i;
+      if (idx > plan.total) break;
+      const endMins = cursor + work;
+      if (endMins > 24 * 60) break;
       newBlocks.push({
         id: `block-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
         date: selectedDate,
-        startTime: `${String(startH).padStart(2, '0')}:${String(startM).padStart(2, '0')}`,
-        endTime: `${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`,
+        startTime: minutesToHHMM(cursor),
+        endTime: minutesToHHMM(endMins),
         modeId: taskMode.id,
-        modeName: task.title,
+        modeName:
+          plan.total > 1
+            ? `${stripDateSuffix(task.title)} · Cycle ${idx}/${plan.total}`
+            : stripDateSuffix(task.title),
         modeIcon: taskMode.icon,
         modeColor: taskMode.color,
-        workDuration: dur,
-        breakDuration: brk,
+        // One honest cycle per block: the event spans exactly the work block.
+        workDuration: work,
+        breakDuration: 0,
         cycles: 1,
         status: 'approved',
+        taskId: task.id,
+        taskTitle: task.title,
+        cycleIndex: idx,
+        cyclesTotal: plan.total,
       });
+      cursor = endMins + gap;
+    }
 
-      cursorMins = endMins + brk;
+    if (newBlocks.length === 0) {
+      setSyncFeedback({
+        message: 'No room left today for those cycles — pick an earlier start or fewer cycles.',
+        type: 'error',
+      });
+      return;
     }
 
     persistBlocksForDate(selectedDate, [...blocks, ...newBlocks]);
-    setSyncFeedback({ message: `Auto-scheduled ${newBlocks.length} tasks into ${selectedDate}!`, type: 'success' });
-  };
-
-  const handleExportIcs = async () => {
-    if (blocks.length === 0) {
-      setSyncFeedback({ message: 'No blocks to export for this day.', type: 'info' });
-      return;
-    }
-    if (window.controlAPI?.exportToIcs) {
-      let res: { success: boolean } | null = null;
-      try {
-        res = (await window.controlAPI.exportToIcs(blocks)) as { success: boolean };
-      } catch (err) {
-        console.warn('ICS export failed:', err);
-        return;
-      }
-      if (res.success) {
-        setSyncFeedback({ message: 'Exported & opened in Apple Calendar (.ics)!', type: 'success' });
-      }
-    }
+    setSyncFeedback({
+      message: `Scheduled ${newBlocks.length} cycle${newBlocks.length === 1 ? '' : 's'} for "${stripDateSuffix(task.title)}" — drag each to its own time. Blocking starts automatically when a cycle's time arrives.`,
+      type: 'success',
+    });
+    setCycleModalTask(null);
   };
 
   // Sync to Obsidian handler
@@ -1147,9 +1336,10 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
     setMiniCalendarMonth(new Date(miniCalendarMonth.getFullYear(), miniCalendarMonth.getMonth() + 1, 1));
   };
 
-  // Filter blocks by enabled mode checklist + visible layers.
+  // Filter blocks by enabled mode checklist + visible layers. Mode-less
+  // blocks have no checklist entry, so they are always visible.
   const visibleBlocks = useMemo(() => {
-    return blocks.filter((b) => enabledModeIds.has(b.modeId) && passesLayers(b));
+    return blocks.filter((b) => (!b.modeId || enabledModeIds.has(b.modeId)) && passesLayers(b));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [blocks, enabledModeIds, showPlanLayer, showGoogleLayer]);
 
@@ -1326,20 +1516,9 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
           >
             Plan
           </button>
-          <button
-            onClick={() => setCalendarView('exams')}
-            className={`px-4 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-              calendarView === 'exams'
-                ? 'bg-sky-500 text-white shadow-sm'
-                : 'hover:bg-white/5 opacity-70 hover:opacity-100'
-            }`}
-            style={{ color: calendarView === 'exams' ? '#ffffff' : currentTheme.textPrimary }}
-          >
-            Exams
-          </button>
         </div>
 
-        {/* Right: Actions (Add Block, Auto-Schedule, Export, Obsidian) */}
+        {/* Right: Actions (Google/Obsidian sync) */}
         <div className="flex items-center space-x-2">
           {/* Daily planned hours metric */}
           <div 
@@ -1390,38 +1569,6 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
             </button>
           )}
 
-          {/* Auto-Plan Tasks */}
-          <button
-            onClick={handleAutoScheduleFromTasks}
-            className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl liquid-glass border hover:bg-sky-500/15 text-xs font-semibold text-sky-400 transition-all active:scale-95 cursor-pointer"
-            title="Automatically schedule pending tasks into calendar"
-          >
-            <Sparkles className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Auto-Plan</span>
-          </button>
-
-          {/* Apple Calendar .ics export */}
-          <button
-            onClick={handleExportIcs}
-            className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl liquid-glass border text-xs font-semibold transition-all hover:bg-white/10 active:scale-95 cursor-pointer"
-            style={{ color: currentTheme.textPrimary }}
-            title="Export to Apple Calendar (.ics)"
-          >
-            <Download className="w-3.5 h-3.5 text-rose-400" />
-            <span className="hidden lg:inline">Apple Calendar</span>
-          </button>
-
-          {/* Apple Blue "+ Control Block" button */}
-          <button
-            onClick={() => handleSlotClick(9, 0, selectedDate)}
-            className="flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all hover:brightness-110 active:scale-95 shadow-md cursor-pointer text-white"
-            style={{
-              backgroundColor: '#007aff', // Authentic Apple Blue
-            }}
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>+ Event</span>
-          </button>
         </div>
       </div>
 
@@ -1681,13 +1828,23 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                           style={{ color: tMode.color || currentTheme.accent }}
                         >
                           {tMode.name} · {tMode.workDuration}m
+                          {(() => {
+                            const plan = taskCyclePlan(t);
+                            if (plan.total <= 1) return null;
+                            return (
+                              <span className="text-sky-400">
+                                {' '}· {plan.remaining} {plan.remaining === 1 ? 'cycle' : 'cycles'} left
+                                {plan.done > 0 ? ` (${plan.done}/${plan.total} done)` : ''}
+                              </span>
+                            );
+                          })()}
                         </span>
                       </div>
 
                       <button
                         onClick={() => handleScheduleTask(t)}
                         className="p-1.5 rounded-xl bg-sky-500/15 text-sky-400 hover:bg-sky-500/25 text-[11px] font-bold transition-all active:scale-90 cursor-pointer shrink-0 opacity-80 group-hover:opacity-100"
-                        title="Schedule into calendar"
+                        title="Arrange this task's cycles in the day (one movable block per cycle)"
                       >
                         <Plus className="w-3 h-3" />
                       </button>
@@ -1735,8 +1892,8 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                   </span>
                   <div className="flex-1 flex flex-wrap gap-1.5 min-w-0">
                     {allDayBlocks.map((block) => {
-                      const mode = modes.find((m) => m.id === block.modeId) || modes[0];
-                      const blockColor = block.modeColor || mode.color || currentTheme.accent;
+                      const mode = modes.find((m) => m.id === block.modeId);
+                      const blockColor = block.modeColor || mode?.color || currentTheme.accent;
                       return (
                         <button
                           key={block.id}
@@ -1822,7 +1979,8 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
 
                   const startAbsMins = sH * 60 + (sM || 0);
                   const endAbsMins = eH * 60 + (eM || 0);
-                  const durationMins = Math.max(20, endAbsMins - startAbsMins);
+                  const effectiveEnd = endAbsMins < startAbsMins ? 24 * 60 : endAbsMins;
+                  const durationMins = Math.max(20, effectiveEnd - startAbsMins);
 
                   const top = minutesToY(startAbsMins, START_HOUR, hourHeight);
                   // Height follows the real duration, with a readable floor for
@@ -1834,11 +1992,17 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                   const horizonHeight = ((horizon - startAbsMins) / 60) * hourHeight - DAY_EVENT_GAP_PX;
                   const height = Math.max(2, Math.min(Math.max(DAY_MIN_EVENT_HEIGHT, naturalHeight), horizonHeight));
 
-                  const mode = modes.find((m) => m.id === block.modeId) || modes[0];
-                  const blockColor = block.modeColor || mode.color || currentTheme.accent;
+                  const mode = modes.find((m) => m.id === block.modeId);
+                  const blockColor = block.modeColor || mode?.color || currentTheme.accent;
                   const place = dayLayout[block.id] || { left: 0, width: 1, lane: 0, span: 1, lanes: 1 };
                   const narrow = place.width < 1;
                   const compact = height < 52;
+                  // Per-cycle progress for task-linked blocks: "cycle x of z"
+                  // plus a done state once the task has credited that cycle.
+                  const cycleTask = block.taskId ? (tasks || []).find((t) => t.id === block.taskId) : null;
+                  const cycleDone =
+                    block.status === 'completed' ||
+                    (block.cycleIndex != null && (cycleTask?.cyclesCompleted || 0) >= (block.cycleIndex || 0));
                   // Apple-style expanding columns: left/width are fractions of the
                   // day column, so overlapped events sit side by side and spring
                   // back to full width once their neighbours have ended.
@@ -1859,9 +2023,9 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                         backgroundColor: isDark ? `${blockColor}22` : `${blockColor}15`,
                         borderColor: `${blockColor}45`,
                         boxShadow: `0 4px 16px -2px rgba(0,0,0,0.25), inset 3px 0 0 0 ${blockColor}`,
-                        opacity: dragPreview?.blockId === block.id && dragPreview.mode !== 'create' ? 0.35 : 1,
+                        opacity: dragPreview?.blockId === block.id && dragPreview.mode !== 'create' ? 0.35 : cycleDone ? 0.6 : 1,
                       }}
-                      title="Drag to move · Alt-drag to copy · edit on click"
+                      title={cycleDone ? 'Cycle completed — click to edit' : 'Drag to move · Alt-drag to copy · edit on click'}
                     >
                       {compact ? (
                         <>
@@ -1888,10 +2052,10 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
-                                if (block.timerEnabled === false) return;
+                                if (block.timerEnabled === false || !mode) return;
                                 onStartBlockInTimer(mode, block);
                               }}
-                              disabled={block.timerEnabled === false}
+                              disabled={block.timerEnabled === false || !mode}
                               className={`p-1 rounded-lg transition-all shadow-sm ${
                                 block.timerEnabled === false
                                   ? 'bg-white/5 text-current opacity-30 cursor-not-allowed'
@@ -1919,7 +2083,11 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center space-x-1.5">
-                            <DynamicIcon name={block.modeIcon || mode.icon} className="w-3.5 h-3.5" style={{ color: blockColor }} />
+                            {block.modeIcon || mode ? (
+                              <DynamicIcon name={block.modeIcon || mode!.icon} className="w-3.5 h-3.5" style={{ color: blockColor }} />
+                            ) : (
+                              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: blockColor }} />
+                            )}
                             <span 
                               className="text-xs font-bold truncate tracking-tight"
                               style={{ color: currentTheme.textPrimary }}
@@ -1940,10 +2108,10 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              if (block.timerEnabled === false) return;
+                              if (block.timerEnabled === false || !mode) return;
                               onStartBlockInTimer(mode, block);
                             }}
-                            disabled={block.timerEnabled === false}
+                            disabled={block.timerEnabled === false || !mode}
                             className={`p-1.5 rounded-xl transition-all shadow-sm ${
                               block.timerEnabled === false
                                 ? 'bg-white/5 text-current opacity-30 cursor-not-allowed'
@@ -1978,7 +2146,11 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                               color: blockColor,
                             }}
                           >
-                            {mode.name} · {block.cycles || 1} {block.cycles === 1 ? 'cycle' : 'cycles'}
+                            {block.cycleIndex != null
+                              ? `Cycle ${block.cycleIndex}${block.cyclesTotal ? `/${block.cyclesTotal}` : ''}${cycleDone ? ' ✓' : ''}`
+                              : mode
+                                ? `${mode.name} · ${block.cycles || 1} ${block.cycles === 1 ? 'cycle' : 'cycles'}`
+                                : 'Planned time'}
                           </span>
                         </div>
                       )}
@@ -2100,7 +2272,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
 
               {/* All-day strip (one cell per day; grid stays for timed events) */}
               {weekDaysInfo.some(
-                (col) => (plans[col.dateStr]?.blocks || []).some((b) => b.allDay && enabledModeIds.has(b.modeId) && passesLayers(b))
+                (col) => (plans[col.dateStr]?.blocks || []).some((b) => b.allDay && (!b.modeId || enabledModeIds.has(b.modeId)) && passesLayers(b))
               ) && (
                 <div className="flex border-b"
                   style={{ borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)' }}
@@ -2109,13 +2281,13 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                   <div className="flex-1 grid grid-cols-7 divide-x" style={{ borderColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)' }}>
                     {weekDaysInfo.map((col) => {
                       const allDay = (plans[col.dateStr]?.blocks || []).filter(
-                        (b) => b.allDay && enabledModeIds.has(b.modeId) && passesLayers(b)
+                        (b) => b.allDay && (!b.modeId || enabledModeIds.has(b.modeId)) && passesLayers(b)
                       );
                       return (
                         <div key={col.dateStr} className="px-1 py-1 space-y-1 min-w-0">
                           {allDay.map((block) => {
-                            const mode = modes.find((m) => m.id === block.modeId) || modes[0];
-                            const blockColor = block.modeColor || mode.color || currentTheme.accent;
+                            const mode = modes.find((m) => m.id === block.modeId);
+                            const blockColor = block.modeColor || mode?.color || currentTheme.accent;
                             return (
                               <button
                                 key={block.id}
@@ -2214,7 +2386,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                 {/* Blocks for all 7 Days across week */}
                 <div ref={weekEventsRef} className="absolute top-0 left-16 right-0 bottom-0 pointer-events-none grid grid-cols-7">
                   {weekDaysInfo.map((col) => {
-                    const dayBlocks = (plans[col.dateStr]?.blocks || []).filter((b) => enabledModeIds.has(b.modeId) && passesLayers(b));
+                    const dayBlocks = (plans[col.dateStr]?.blocks || []).filter((b) => (!b.modeId || enabledModeIds.has(b.modeId)) && passesLayers(b));
                     const gridBlocks = dayBlocks.filter((b) => !b.allDay);
                     const colLayout = layoutOverlappingBlocks(gridBlocks);
                     return (
@@ -2242,7 +2414,8 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
 
                           const startAbsMins = sH * 60 + (sM || 0);
                           const endAbsMins = eH * 60 + (eM || 0);
-                          const durationMins = Math.max(20, endAbsMins - startAbsMins);
+                          const effectiveEnd = endAbsMins < startAbsMins ? 24 * 60 : endAbsMins;
+                          const durationMins = Math.max(20, effectiveEnd - startAbsMins);
 
                           const top = minutesToY(startAbsMins, START_HOUR, hourHeight);
                           // Same rule as day view: real duration, readable floor,
@@ -2252,10 +2425,14 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                           const horizonHeight = ((horizon - startAbsMins) / 60) * hourHeight - WEEK_EVENT_GAP_PX;
                           const height = Math.max(2, Math.min(Math.max(WEEK_MIN_EVENT_HEIGHT, naturalHeight), horizonHeight));
 
-                          const mode = modes.find((m) => m.id === block.modeId) || modes[0];
-                          const blockColor = block.modeColor || mode.color || currentTheme.accent;
+                          const mode = modes.find((m) => m.id === block.modeId);
+                          const blockColor = block.modeColor || mode?.color || currentTheme.accent;
                           const place = colLayout[block.id] || { left: 0, width: 1, lane: 0, span: 1, lanes: 1 };
                           const compactWeek = height < 44;
+                          const cycleTask = block.taskId ? (tasks || []).find((t) => t.id === block.taskId) : null;
+                          const cycleDone =
+                            block.status === 'completed' ||
+                            (block.cycleIndex != null && (cycleTask?.cyclesCompleted || 0) >= (block.cycleIndex || 0));
                           const weekLeft = `calc(${(place.left * 100).toFixed(4)}% + ${WEEK_EVENT_GAP_PX}px)`;
                           const weekWidth = `calc(${(place.width * 100).toFixed(4)}% - ${WEEK_EVENT_GAP_PX * 2}px)`;
 
@@ -2273,9 +2450,13 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                                 backgroundColor: isDark ? `${blockColor}22` : `${blockColor}18`,
                                 borderColor: `${blockColor}45`,
                                 boxShadow: `inset 2px 0 0 0 ${blockColor}`,
-                                opacity: dragPreview?.blockId === block.id && dragPreview.mode !== 'create' ? 0.35 : 1,
+                                opacity: dragPreview?.blockId === block.id && dragPreview.mode !== 'create' ? 0.35 : cycleDone ? 0.6 : 1,
                               }}
-                              title="Drag to move · Alt-drag to copy · edit on click"
+                              title={
+                                block.cycleIndex != null
+                                  ? `Cycle ${block.cycleIndex}${block.cyclesTotal ? `/${block.cyclesTotal}` : ''}${cycleDone ? ' — done' : ''} · drag to move · edit on click`
+                                  : 'Drag to move · Alt-drag to copy · edit on click'
+                              }
                             >
                               {compactWeek ? (
                                 <div className="flex items-center gap-1 h-full min-w-0">
@@ -2371,28 +2552,218 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
             />
             </div>
           )}
-
-          {/* =========================================================================
-              VIEW 4: EXAMS (countdowns + syllabus planning)
-              ========================================================================= */}
-          {calendarView === 'exams' && onSaveExams && (
-            <div className="flex-1 flex flex-col min-h-full overflow-y-auto">
-              <ExamsView
-                exams={exams || []}
-                modes={modes}
-                plans={plans}
-                onSaveExams={onSaveExams}
-                onSavePlan={onSavePlan}
-                theme={theme}
-              />
-            </div>
-          )}
         </div>
       </div>
 
       {/* =========================================================================
           APPLE EVENT INSPECTOR SHEET (ADD / EDIT CONTROL BLOCK MODAL)
           ========================================================================= */}
+      {/* Schedule-cycles modal: split one task into per-cycle planner blocks,
+          each individually scheduled. */}
+      {cycleModalTask && (() => {
+        const task = cycleModalTask;
+        const plan = taskCyclePlan(task);
+        const m = modes.find((x) => x.id === cycleModalModeId);
+        const noMode = !m;
+        const work = Math.max(1, m?.workDuration ?? 25);
+        const count = Math.max(1, Math.min(12, cycleModalCount));
+        const gap = Math.max(0, cycleModalGap);
+        const freeDuration = Math.max(1, Math.min(24 * 60, Math.round(cycleModalDuration) || 60));
+        const startMins = hhmmToMinutes(cycleModalStart);
+        const lastEnd = noMode
+          ? startMins + freeDuration
+          : startMins + (count - 1) * (work + gap) + work;
+        const overflow = lastEnd > 24 * 60;
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 select-none">
+            <div onClick={() => setCycleModalTask(null)} className="absolute inset-0 bg-black/40" />
+            <div
+              className="relative w-full max-w-md p-6 rounded-3xl border shadow-2xl z-10 space-y-4 animate-modal-in"
+              style={{
+                backgroundColor: isDark ? '#0e111a' : '#ffffff',
+                borderColor: isDark ? 'rgba(255,255,255,0.16)' : 'rgba(0,0,0,0.12)',
+              }}
+            >
+              <div
+                className="flex items-center justify-between pb-3 border-b"
+                style={{ borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)' }}
+              >
+                <div className="flex items-center space-x-2">
+                  <div className="w-6 h-6 rounded-lg bg-sky-500/15 border border-sky-500/30 flex items-center justify-center text-sky-400">
+                    <Layers className="w-3.5 h-3.5" />
+                  </div>
+                  <h2 className="text-sm font-bold tracking-tight" style={{ color: currentTheme.textPrimary }}>
+                    {noMode ? 'Schedule Time in the Day' : 'Arrange Cycles in the Day'}
+                  </h2>
+                </div>
+                <button
+                  onClick={() => setCycleModalTask(null)}
+                  className="p-1 hover:opacity-70 cursor-pointer"
+                  style={{ color: currentTheme.textSecondary }}
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <p className="text-[11px] leading-relaxed" style={{ color: currentTheme.textSecondary }}>
+                <span className="font-bold" style={{ color: currentTheme.textPrimary }}>
+                  {stripDateSuffix(task.title)}
+                </span>
+                {noMode
+                  ? task.estimateMinutes
+                    ? ` — estimated ${task.estimateMinutes}m.`
+                    : ''
+                  : plan.total > 1
+                    ? ` — ${plan.done} of ${plan.total} cycles done, ${Math.max(0, plan.total - plan.done)} left.`
+                    : ''}{' '}
+                {noMode
+                  ? 'No mode needed — this is just time on your calendar.'
+                  : 'Each block below is one cycle, linked to the task and movable to its own time.'}
+              </p>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div className="col-span-2">
+                  <label className="text-[11px] font-mono uppercase block mb-1 font-semibold" style={{ color: currentTheme.textSecondary }}>
+                    Mode (optional)
+                  </label>
+                  <select
+                    value={cycleModalModeId}
+                    onChange={(e) => setCycleModalModeId(e.target.value)}
+                    className="w-full px-2.5 py-2 rounded-xl liquid-glass-input border text-xs font-semibold outline-none"
+                    style={{ color: currentTheme.textPrimary }}
+                  >
+                    <option value="" className="bg-neutral-900 text-neutral-200">
+                      No mode — free time block
+                    </option>
+                    {modes.map((mm) => (
+                      <option key={mm.id} value={mm.id} className="bg-neutral-900 text-neutral-200">
+                        {mm.name} ({mm.workDuration}m / {mm.breakDuration}m)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-mono uppercase block mb-1 font-semibold" style={{ color: currentTheme.textSecondary }}>
+                    {noMode ? 'Start' : 'First Cycle'}
+                  </label>
+                  <input
+                    type="time"
+                    value={cycleModalStart}
+                    onChange={(e) => setCycleModalStart(e.target.value)}
+                    className="w-full px-2.5 py-2 rounded-xl liquid-glass-input border text-xs font-mono font-bold outline-none"
+                    style={{ color: currentTheme.textPrimary }}
+                  />
+                </div>
+
+                {noMode ? (
+                  <div>
+                    <label className="text-[11px] font-mono uppercase block mb-1 font-semibold" style={{ color: currentTheme.textSecondary }}>
+                      Duration (min)
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={1440}
+                      value={cycleModalDuration}
+                      onChange={(e) => {
+                        const v = parseInt(e.target.value, 10);
+                        setCycleModalDuration(Number.isFinite(v) ? Math.max(1, Math.min(1440, v)) : 60);
+                      }}
+                      className="w-full px-2.5 py-2 rounded-xl liquid-glass-input border text-xs font-mono font-bold outline-none"
+                      style={{ color: currentTheme.textPrimary }}
+                    />
+                  </div>
+                ) : (
+                  <div>
+                    <label className="text-[11px] font-mono uppercase block mb-1 font-semibold" style={{ color: currentTheme.textSecondary }}>
+                      Gap (min)
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={120}
+                      value={cycleModalGap}
+                      onChange={(e) => {
+                        const v = parseInt(e.target.value, 10);
+                        setCycleModalGap(Number.isFinite(v) ? Math.max(0, Math.min(120, v)) : 0);
+                      }}
+                      className="w-full px-2.5 py-2 rounded-xl liquid-glass-input border text-xs font-mono font-bold outline-none"
+                      style={{ color: currentTheme.textPrimary }}
+                    />
+                  </div>
+                )}
+              </div>
+
+              {!noMode && (
+                <div className="p-3 rounded-2xl liquid-glass border flex items-center justify-between">
+                  <div className="min-w-0">
+                    <span className="text-[11px] font-mono uppercase font-semibold block" style={{ color: currentTheme.textSecondary }}>
+                      Cycles to place
+                    </span>
+                    <span className="text-[10px] font-mono" style={{ color: currentTheme.textMuted }}>
+                      {work}m each · {plan.remaining} unplaced
+                    </span>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <button
+                      type="button"
+                      onClick={() => setCycleModalCount((c) => Math.max(1, c - 1))}
+                      className="w-7 h-7 rounded-lg liquid-glass border text-sm font-bold cursor-pointer hover:bg-white/10"
+                      style={{ color: currentTheme.textPrimary }}
+                    >
+                      −
+                    </button>
+                    <span className="w-8 text-center font-mono font-bold text-sm" style={{ color: currentTheme.textPrimary }}>
+                      {count}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setCycleModalCount((c) => Math.min(12, c + 1))}
+                      className="w-7 h-7 rounded-lg liquid-glass border text-sm font-bold cursor-pointer hover:bg-white/10"
+                      style={{ color: currentTheme.textPrimary }}
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div
+                className="p-2.5 rounded-xl liquid-glass border text-[11px] leading-relaxed"
+                style={{ color: overflow ? '#f43f5e' : currentTheme.textSecondary }}
+              >
+                {overflow
+                  ? "Doesn't fit before midnight — start earlier, place fewer cycles, or shrink the gap."
+                  : noMode
+                    ? `Free block from ${formatTime12h(cycleModalStart)} to ${minutesToHHMM(lastEnd)}. No timer, no blocking — it just marks the time.`
+                    : `${count} block${count === 1 ? '' : 's'} from ${formatTime12h(cycleModalStart)} to ${minutesToHHMM(lastEnd)}. Blocking starts automatically when each cycle's time arrives.`}
+              </div>
+
+              <div className="pt-2 flex items-center justify-end space-x-2">
+                <button
+                  type="button"
+                  onClick={() => setCycleModalTask(null)}
+                  className="px-4 py-2 rounded-xl liquid-glass border text-xs font-semibold hover:bg-white/10 cursor-pointer"
+                  style={{ color: currentTheme.textSecondary }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmScheduleCycles}
+                  disabled={overflow}
+                  className={`px-5 py-2 rounded-xl text-xs font-bold transition-all shadow-md cursor-pointer text-white ${overflow ? 'opacity-50 cursor-not-allowed' : 'hover:brightness-110 active:scale-95'}`}
+                  style={{ backgroundColor: '#007aff' }}
+                >
+                  {noMode ? 'Add Block' : `Add ${count} Cycle${count === 1 ? '' : 's'}`}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {isEditModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 select-none">
           <div 
@@ -2457,6 +2828,25 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                   <ModeViewToggle view={blockModeView} onChange={setBlockModeView} theme={theme} />
                 </div>
                 <div className={blockModeView === 'grid' ? 'grid grid-cols-2 gap-2 max-h-36 overflow-y-auto pr-1' : 'space-y-1.5 max-h-36 overflow-y-auto pr-1'}>
+                  <button
+                    type="button"
+                    onClick={() => setBlockModeId('')}
+                    className={`p-2 rounded-xl text-left border flex items-center space-x-2 transition-all cursor-pointer col-span-2 ${
+                      !blockModeId
+                        ? 'bg-sky-500/20 border-sky-500/50 shadow-sm'
+                        : 'liquid-glass border hover:bg-white/5'
+                    }`}
+                  >
+                    <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: currentTheme.textMuted }} />
+                    <div className="min-w-0 flex-1">
+                      <span className="text-xs font-bold block truncate" style={{ color: currentTheme.textPrimary }}>
+                        No mode — just block the time
+                      </span>
+                      <span className="text-[10px] font-mono block opacity-60" style={{ color: currentTheme.textSecondary }}>
+                        Free duration · no timer · no blocking
+                      </span>
+                    </div>
+                  </button>
                   {modeListEntries.map(({ label, mode: m }) => {
                     const isSel = blockModeId === m.id;
                     const modeColor = m.color || currentTheme.accent;
@@ -2474,7 +2864,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                         key={m.id}
                         type="button"
                         onClick={() => {
-                          setBlockModeId(m.id);
+                          handleEditorModeChange(m.id);
                           if (!blockTitle) setBlockTitle(m.name);
                         }}
                         className={`p-2 rounded-xl text-left border flex items-center space-x-2 transition-all cursor-pointer ${
@@ -2524,7 +2914,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                   <input
                     type="time"
                     value={blockStartTime}
-                    onChange={(e) => setBlockStartTime(e.target.value)}
+                    onChange={(e) => handleEditorStartChange(e.target.value)}
                     className="w-full px-2.5 py-2 rounded-xl liquid-glass-input border text-xs font-mono font-bold outline-none"
                     style={{ color: currentTheme.textPrimary }}
                   />
@@ -2537,12 +2927,77 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                   <input
                     type="time"
                     value={blockEndTime}
-                    onChange={(e) => setBlockEndTime(e.target.value)}
+                    onChange={(e) => handleEditorEndChange(e.target.value)}
                     className="w-full px-2.5 py-2 rounded-xl liquid-glass-input border text-xs font-mono font-bold outline-none"
                     style={{ color: currentTheme.textPrimary }}
                   />
                 </div>
               </div>
+
+              {/* Cycles ↔ duration (R-04): locked together so the planned event
+                  can never claim a length the session will not run. Hidden for
+                  mode-less blocks, which have no timer at all. */}
+              {!editorMode && (
+                <div className="p-2.5 rounded-xl liquid-glass border text-[11px] leading-relaxed" style={{ color: currentTheme.textSecondary }}>
+                  <span className="font-bold" style={{ color: currentTheme.textPrimary }}>No mode.</span>{' '}
+                  This is just planned time — it shows on the calendar and as a task (without a mode),
+                  but starts no timer and blocks nothing. Set any start and end you like.
+                </div>
+              )}
+              {editorMode && !editorIsChill && (() => {
+                const editingBlk = editingBlockId ? blocks.find((b) => b.id === editingBlockId) : null;
+                const isCycleBlock = !!editingBlk?.taskId;
+                const w = Math.max(1, editorMode?.workDuration ?? 25);
+                const b = Math.max(0, editorMode?.breakDuration ?? 0);
+                if (isCycleBlock) {
+                  return (
+                    <div className="p-2.5 rounded-xl liquid-glass border text-[11px] leading-relaxed" style={{ color: currentTheme.textSecondary }}>
+                      <span className="font-bold text-sky-400">
+                        Task cycle {editingBlk?.cycleIndex ?? '?'}
+                        {editingBlk?.cyclesTotal ? ` of ${editingBlk.cyclesTotal}` : ''}
+                      </span>
+                      {editingBlk?.taskTitle ? ` — ${stripDateSuffix(editingBlk.taskTitle)}` : ''}.{' '}
+                      Fixed at one control cycle ({w}m focus), so the event length equals the session
+                      exactly. The task resumes at its next unfinished cycle.
+                    </div>
+                  );
+                }
+                return (
+                  <div className="p-3 rounded-2xl liquid-glass border space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-mono uppercase font-semibold" style={{ color: currentTheme.textSecondary }}>
+                        Control Cycles
+                      </span>
+                      <div className="flex items-center space-x-2">
+                        <button
+                          type="button"
+                          onClick={() => handleEditorCyclesStep(-1)}
+                          className="w-7 h-7 rounded-lg liquid-glass border text-sm font-bold cursor-pointer hover:bg-white/10"
+                          style={{ color: currentTheme.textPrimary }}
+                        >
+                          −
+                        </button>
+                        <span className="w-8 text-center font-mono font-bold text-sm" style={{ color: currentTheme.textPrimary }}>
+                          {blockCycles}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleEditorCyclesStep(1)}
+                          className="w-7 h-7 rounded-lg liquid-glass border text-sm font-bold cursor-pointer hover:bg-white/10"
+                          style={{ color: currentTheme.textPrimary }}
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                    <p className="text-[10px] font-mono leading-relaxed" style={{ color: currentTheme.textMuted }}>
+                      {blockCycles > 1
+                        ? `${blockCycles} × ${w}m focus + ${blockCycles - 1} × ${b}m break = ${sessionWallMinutes(w, b, blockCycles)}m. The event is snapped to this exact wall and the timer runs exactly this long.`
+                        : `One honest cycle: the event's ${Math.max(1, hhmmToMinutes(blockEndTime) - hhmmToMinutes(blockStartTime))}m is one control block — no trailing break. The timer runs exactly this long.`}
+                    </p>
+                  </div>
+                );
+              })()}
 
               {/* Time Calculation Badge */}
               <div className="p-2.5 rounded-xl liquid-glass border flex items-center justify-between text-xs">

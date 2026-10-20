@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Search, CheckSquare, Timer, Shield, Calendar, Sliders, BarChart3, Settings,
-  Moon, Sun, Play, Plus, Volume2, Sparkles, X, ArrowRight, Users, StickyNote
+  Moon, Sun, Play, Plus, Volume2, Sparkles, X, ArrowRight, StickyNote
 } from 'lucide-react';
 import { StudyMode, TaskItem, ThemeId } from '../types';
 import { THEMES } from '../styles/themes';
@@ -116,28 +116,19 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       id: 'nav-settings',
       category: 'Navigation',
       title: 'Go to Preferences & Appearance',
-      subtitle: 'Liquid glass themes, audio cues & backup [9]',
+      subtitle: 'Liquid glass themes, audio cues & backup [8]',
       icon: <Settings className="w-4 h-4 text-zinc-400" />,
       action: () => { onSelectTab('settings'); onClose(); },
-      badge: '⌘9',
-    },
-    {
-      id: 'nav-rooms',
-      category: 'Navigation',
-      title: 'Go to Control Rooms',
-      subtitle: 'Study together over local Wi-Fi [7]',
-      icon: <Users className="w-4 h-4 text-orange-500" />,
-      action: () => { onSelectTab('rooms'); onClose(); },
-      badge: '⌘7',
+      badge: '⌘8',
     },
     {
       id: 'nav-notes',
       category: 'Navigation',
       title: 'Go to Notes',
-      subtitle: 'Quick captures filed by task & mode [8]',
+      subtitle: 'Quick captures filed by task & mode [7]',
       icon: <StickyNote className="w-4 h-4 text-amber-500" />,
       action: () => { onSelectTab('notes'); onClose(); },
-      badge: '⌘8',
+      badge: '⌘7',
     },
 
     // 2. Study Modes Quick Launch

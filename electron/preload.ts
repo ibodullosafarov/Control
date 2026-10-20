@@ -4,7 +4,7 @@ import {
   AppBlockerStatus, InstalledAppInfo, TraySessionInfo, PurposeSessionRequest, TaskItem,
   StudyMode, ObsidianConfig, ObsidianSyncResult, TasksMdReadResult, PlannerMdStatus, PlannerTemplate,
   DayMarkdownPlan, ApplyTemplateResult, PlannerMdOpResult, PlannerMdTaskOpResult,
-  PlannerFileChangeEvent, ActivitySample, DistractionEvent, Note, NoteFolder, RoomTimerState, RoomsStatus, RoomsEvent,
+  PlannerFileChangeEvent, ActivitySample, DistractionEvent, Note, NoteFolder,
   GoogleSyncStatus, GoogleApplyMutations, GoogleApplyResult, GoogleConnectResult,
   GoogleDisconnectResult, GoogleListCalendarsResult, GoogleSyncNowResult,
   AutoExecStatus, AutoExecStartRequest, AutoExecStartResult, AutoExecEndRequest, AutoExecEndResult,
@@ -33,6 +33,8 @@ contextBridge.exposeInMainWorld('controlAPI', {
     ipcRenderer.invoke('control:sendNotification', title, body),
   setMinimalWindow: (isMinimal: boolean): Promise<void> =>
     ipcRenderer.invoke('control:setMinimalWindow', isMinimal),
+  setDockIconAppearance: (isDark: boolean): Promise<void> =>
+    ipcRenderer.invoke('control:setDockIconAppearance', isDark),
   syncToGoogleCalendar: (blocks: ScheduleBlock[], config: GoogleCalendarConfig): Promise<{ success: boolean; syncedCount: number; error?: string }> =>
     ipcRenderer.invoke('control:syncToGoogleCalendar', blocks, config),
   exportToIcs: (blocks: ScheduleBlock[]): Promise<{ success: boolean; filePath?: string; error?: string }> =>
@@ -91,25 +93,6 @@ contextBridge.exposeInMainWorld('controlAPI', {
   },
   syncNotesToObsidian: (notes: Note[], folders: NoteFolder[], config: ObsidianConfig): Promise<ObsidianSyncResult> =>
     ipcRenderer.invoke('control:syncNotesToObsidian', notes, folders, config),
-  // ── LAN control rooms (no accounts, no cloud) ────────────────────────────
-  rooms: {
-    getStatus: (): Promise<RoomsStatus> => ipcRenderer.invoke('control:roomsGetStatus'),
-    hostStart: (room: string, name: string): Promise<{ success: boolean; port?: number; error?: string }> =>
-      ipcRenderer.invoke('control:roomsHostStart', room, name),
-    hostStop: (): Promise<{ success: boolean }> => ipcRenderer.invoke('control:roomsHostStop'),
-    publish: (state: RoomTimerState | null): Promise<{ success: boolean }> =>
-      ipcRenderer.invoke('control:roomsPublish', state),
-    join: (host: string, port: number, name: string): Promise<{ success: boolean; error?: string }> =>
-      ipcRenderer.invoke('control:roomsJoin', host, port, name),
-    leave: (): Promise<{ success: boolean }> => ipcRenderer.invoke('control:roomsLeave'),
-    onEvent: (callback: (event: RoomsEvent) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, event: RoomsEvent) => callback(event);
-      ipcRenderer.on('control:roomsEvent', handler);
-      return () => {
-        ipcRenderer.removeListener('control:roomsEvent', handler);
-      };
-    },
-  },
   getPurposeSessionRequest: (): Promise<PurposeSessionRequest | null> =>
     ipcRenderer.invoke('control:getPurposeSessionRequest'),
   acknowledgePurposeSessionRequest: (id: string): Promise<boolean> =>

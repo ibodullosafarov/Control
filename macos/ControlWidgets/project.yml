@@ -1,0 +1,76 @@
+name: ControlWidgets
+options:
+  bundleIdPrefix: com.control.widgets
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: false
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_HARDENED_RUNTIME: NO
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    DEVELOPMENT_TEAM: ""
+
+targets:
+  # The WidgetKit extension. This MUST be a real Xcode app-extension product
+  # (com.apple.product-type.app-extension): on macOS 26 a hand-linked swiftc
+  # appex lacks the entry-point/runloop setup Xcode's Widget Extension template
+  # adds, so ExtensionFoundation traps and the widget never registers.
+  ControlWidgetsExtension:
+    type: app-extension
+    platform: macOS
+    sources:
+      - Sources/Widgets
+      - Sources/Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.control.widgets.ControlWidgets
+        PRODUCT_NAME: ControlWidgetsExtension
+        SKIP_INSTALL: YES
+        CODE_SIGN_ENTITLEMENTS: ControlWidgets.entitlements
+    info:
+      path: Generated/Extension-Info.plist
+      properties:
+        CFBundleDisplayName: Control Widgets
+        CFBundleExecutable: ControlWidgetsExtension
+        CFBundleName: ControlWidgets
+        CFBundlePackageType: XPC!
+        CFBundleSupportedPlatforms: [MacOSX]
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+
+  # Minimal host app: it exists to own/embed the extension and give the user a
+  # Reload Widgets button. Widgets work with it closed after one launch.
+  ControlWidgets:
+    type: application
+    platform: macOS
+    sources:
+      - Sources/Host
+      - Sources/Shared
+    dependencies:
+      - target: ControlWidgetsExtension
+        embed: true
+        codeSign: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.control.widgets
+        PRODUCT_NAME: Control Widgets
+        INFOPLIST_KEY_CFBundleDisplayName: Control Widgets
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+        ASSETCATALOG_COMPILER_APPICON_NAME: ""
+    info:
+      path: Generated/App-Info.plist
+      properties:
+        CFBundleDisplayName: Control Widgets
+        CFBundleExecutable: Control Widgets
+        CFBundleIconFile: AppIcon
+        CFBundleName: Control Widgets
+        CFBundlePackageType: APPL
+        LSMinimumSystemVersion: "14.0"
+        NSHighResolutionCapable: true
+        NSPrincipalClass: NSApplication

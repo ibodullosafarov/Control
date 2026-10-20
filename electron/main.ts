@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Tray, Menu, Notification, nativeImage } from 'electron';
+import { app, BrowserWindow, ipcMain, Tray, Menu, Notification, nativeImage, nativeTheme } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -11,8 +11,7 @@ import { plannerMarkdown } from './plannerMarkdown';
 import { GoogleSyncService } from './google/service';
 import { AutoExecService } from './autoexec';
 import { activityTracker } from './activity';
-import { RoomsCoordinator } from './rooms/index';
-import type { RoomTimerState } from './rooms/net';
+import { writeWidgetState } from './widgetBridge';
 import {
   openQuickNote,
   registerQuickNoteIpc,
@@ -26,6 +25,16 @@ let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
 let purposeRequestPoller: ReturnType<typeof setInterval> | null = null;
+let widgetStatePoller: ReturnType<typeof setInterval> | null = null;
+
+/** Publish the current app state for the native macOS widgets (best-effort). */
+function publishWidgetState() {
+  try {
+    writeWidgetState(localStore.get());
+  } catch (err) {
+    console.warn('Widget state publish failed:', err);
+  }
+}
 
 // Google Calendar two-way sync — main process owns OAuth, tokens and the engine.
 const googleSync = new GoogleSyncService({
@@ -55,9 +64,6 @@ function sendToRenderer(channel: string, payload?: unknown): void {
     // Window gone; event is dropped.
   }
 }
-
-// LAN control rooms (feature: accountability without accounts or cloud).
-const rooms = new RoomsCoordinator((event) => sendToRenderer('control:roomsEvent', event));
 
 // Quick-note capture target (popup window). Resolved once the app is ready.
 let captureTarget: CaptureTarget | null = null;
@@ -141,8 +147,27 @@ function startPurposeRequestWatcher() {
   purposeRequestPoller = setInterval(notifyPurposeSessionIfPresent, 700);
 }
 
+// The brand mark ships in two Icon Composer appearance variants. The renderer
+// tells us which one matches the app's active theme; until then we fall back to
+// the macOS system appearance.
+let dockIconDarkPreference: boolean | null = null;
+
 function getAppLogoPath(): string | undefined {
   const appPath = app.getAppPath();
+  const dark =
+    dockIconDarkPreference ?? (process.platform === 'darwin' && nativeTheme.shouldUseDarkColors);
+  const variant = dark ? 'AppIcon-Dark' : 'AppIcon-Default';
+  const variantCandidates = [
+    path.join(appPath, 'assets', `${variant}.png`),
+    path.join(process.resourcesPath, 'assets', `${variant}.png`),
+    path.join(appPath, 'assets', `${variant}.icns`),
+    path.join(process.resourcesPath, 'assets', `${variant}.icns`),
+    path.join(__dirname, '../../assets', `${variant}.png`),
+    path.join(__dirname, '../assets', `${variant}.png`),
+  ];
+  const preferred = variantCandidates.find((p) => fs.existsSync(p));
+  if (preferred) return preferred;
+
   const iconCandidates = [
     path.join(appPath, 'icon.png'),
     path.join(appPath, 'logo.png'),
@@ -173,6 +198,17 @@ function applyAppDockIcon() {
       }
     }
   }
+}
+
+// Keep the Dock icon in sync with the system appearance so the dark mark shows
+// in dark mode and the default mark shows in light mode.
+function watchSystemAppearanceForDockIcon() {
+  if (process.platform !== 'darwin') return;
+  nativeTheme.on('updated', () => {
+    // The renderer's theme choice wins once it has told us; otherwise follow
+    // the system.
+    if (dockIconDarkPreference === null) applyAppDockIcon();
+  });
 }
 
 function createMainWindow() {
@@ -593,6 +629,7 @@ function setupIpc() {
     const saved = localStore.save(data);
     if (saved) googleSync.onLocalDataSaved();
     if (saved) autoExec.onLocalDataSaved();
+    if (saved) publishWidgetState();
     return saved;
   });
 
@@ -628,6 +665,8 @@ function setupIpc() {
 
   ipcMain.handle('control:updateTraySession', async (_, info: TraySessionInfo) => {
     updateTrayMenu(info);
+    // Session ticks are the freshest signal for the live-timer widget.
+    publishWidgetState();
   });
 
   ipcMain.handle('control:updateTray', async (_, text: string, title?: string, tooltip?: string) => {
@@ -667,6 +706,13 @@ function setupIpc() {
         mainWindow.setSize(1060, 740, true);
       }
     }
+  });
+
+  // The renderer owns the light/dark theme; mirror it onto the Dock icon so the
+  // brand mark matches the app, not necessarily the OS.
+  ipcMain.handle('control:setDockIconAppearance', async (_, isDark: boolean) => {
+    dockIconDarkPreference = !!isDark;
+    applyAppDockIcon();
   });
 
   ipcMain.handle('control:syncToGoogleCalendar', async (_, blocks: ScheduleBlock[], config: GoogleCalendarConfig) => {
@@ -849,48 +895,6 @@ function setupIpc() {
     }
   });
 
-  ipcMain.handle('control:roomsGetStatus', async () => rooms.status());
-
-  ipcMain.handle('control:roomsHostStart', async (_, room: string, name: string) => {
-    try {
-      const { port } = await rooms.startHosting(room, name);
-      return { success: true, port };
-    } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : String(err) };
-    }
-  });
-
-  ipcMain.handle('control:roomsHostStop', async () => {
-    await rooms.stopHosting();
-    return { success: true };
-  });
-
-  ipcMain.handle('control:roomsPublish', async (_, state: RoomTimerState | null) => {
-    try {
-      rooms.publish(state);
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : String(err) };
-    }
-  });
-
-  ipcMain.handle('control:roomsJoin', async (_, host: string, port: number, name: string) => {
-    try {
-      if (typeof host !== 'string' || !Number.isFinite(port) || port <= 0 || port > 65535) {
-        return { success: false, error: 'Invalid host or port.' };
-      }
-      await rooms.join(host, port, typeof name === 'string' ? name : 'Guest');
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : String(err) };
-    }
-  });
-
-  ipcMain.handle('control:roomsLeave', async () => {
-    await rooms.leave();
-    return { success: true };
-  });
-
   registerQuickNoteIpc({
     store: localStore,
     target: () => captureTarget || resolveCaptureTarget(),
@@ -1013,6 +1017,7 @@ app.on('open-url', (event, url) => {
 // App lifecycle
 app.whenReady().then(() => {
   applyAppDockIcon();
+  watchSystemAppearanceForDockIcon();
   captureTarget = resolveCaptureTarget();
   const quickNoteAccelerator = registerQuickNoteShortcut(openCapture);
   if (quickNoteAccelerator) {
@@ -1036,6 +1041,9 @@ app.whenReady().then(() => {
   setupAutoUpdater();
   googleSync.start();
   autoExec.start();
+  // Publish widget state immediately and keep it fresh for the native widgets.
+  publishWidgetState();
+  widgetStatePoller = setInterval(publishWidgetState, 15000);
 
   const appData = localStore.get();
   const settings = appData.settings;
@@ -1078,23 +1086,37 @@ app.whenReady().then(() => {
   });
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', (e) => {
+  if (isQuitting) {
+    try { googleSync.stop(); } catch { /* ignore */ }
+    try { autoExec.stop(); } catch { /* ignore */ }
+    try { activityTracker.stop(); } catch { /* ignore */ }
+    try { unregisterQuickNoteShortcut(); } catch { /* ignore */ }
+    try { plannerMarkdown.stopWatching(); } catch { /* ignore */ }
+    try { obsidianManager.stopWatching(); } catch { /* ignore */ }
+    try { clearInterval(purposeRequestPoller as unknown as NodeJS.Timeout); } catch { /* ignore */ }
+    purposeRequestPoller = null;
+    try { clearInterval(widgetStatePoller as unknown as NodeJS.Timeout); } catch { /* ignore */ }
+    widgetStatePoller = null;
+    return;
+  }
+
+  const isActive = currentTrayInfo && currentTrayInfo.isActive;
+  if (isActive && mainWindow && !mainWindow.isDestroyed()) {
+    e.preventDefault();
+    mainWindow.show();
+    mainWindow.focus();
+    mainWindow.webContents.send('control:triggerLeaveModal');
+    return;
+  }
+
+  e.preventDefault();
   isQuitting = true;
-  try { googleSync.stop(); } catch { /* ignore */ }
-  try { autoExec.stop(); } catch { /* ignore */ }
-  try { activityTracker.stop(); } catch { /* ignore */ }
-  try { unregisterQuickNoteShortcut(); } catch { /* ignore */ }
-  try { plannerMarkdown.stopWatching(); } catch { /* ignore */ }
-  try { obsidianManager.stopWatching(); } catch { /* ignore */ }
-  // Electron does not await async before-quit: best-effort synchronous cleanup.
-  // Full privileged unblock also runs on explicit Quit handlers which do await.
-  void rooms.shutdown().catch(() => undefined);
   void (async () => {
     try { await appBlocker.stopBlocking(); } catch { /* ignore */ }
     try { await blocker.stopBlocking(); } catch { /* ignore */ }
+    app.quit();
   })();
-  try { clearInterval(purposeRequestPoller as unknown as NodeJS.Timeout); } catch { /* ignore */ }
-  purposeRequestPoller = null;
 });
 
 app.on('window-all-closed', () => {

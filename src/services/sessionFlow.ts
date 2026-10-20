@@ -115,7 +115,7 @@ export const LONG_SESSION_CONFIRM_WALL_MINS = 60;
 
 export interface SessionCycleSource {
   /** Tasks currently in the store (looked up by id). */
-  tasks: Array<{ id: string; cycles?: number }>;
+  tasks: Array<{ id: string; cycles?: number; cyclesCompleted?: number }>;
   /** Tasks attached to the session being started. */
   taskIds: string[];
   /** Mode fallback for tasks that predate per-task cycles. */
@@ -125,18 +125,54 @@ export interface SessionCycleSource {
 }
 
 /**
+ * Cycles of `task` still to run: total minus already-completed. Tasks that
+ * predate per-task cycles (or never had a count) resolve to 1 — a single
+ * honest control block, same as before.
+ */
+export function remainingTaskCycles(task: { cycles?: number; cyclesCompleted?: number }): number {
+  const total = typeof task.cycles === 'number' && Number.isFinite(task.cycles) ? Math.floor(task.cycles) : 0;
+  if (total < 1) return 1;
+  const done = typeof task.cyclesCompleted === 'number' && Number.isFinite(task.cyclesCompleted)
+    ? Math.max(0, Math.floor(task.cyclesCompleted))
+    : 0;
+  return Math.max(1, total - done);
+}
+
+/**
  * Resolve how many control blocks a session runs:
- * explicit override → strongest per-task choice among the attached tasks →
- * mode fallback. Never below 1.
+ * explicit override → strongest per-task *remaining* choice among the
+ * attached tasks (a task resumed mid-way picks up at its next unfinished
+ * cycle instead of replaying the full count) → mode fallback. Tasks that
+ * predate per-task cycles don't vote at all. Never below 1.
  */
 export function resolveSessionCycles(source: SessionCycleSource): number {
   if (source.overrideCycles !== undefined) return clampCycles(source.overrideCycles, 1);
   let best = 0;
   for (const id of source.taskIds) {
     const task = source.tasks.find((t) => t.id === id);
-    const c = task && typeof task.cycles === 'number' ? Math.floor(task.cycles) : 0;
+    if (!task) continue;
+    const total = typeof task.cycles === 'number' && Number.isFinite(task.cycles) ? Math.floor(task.cycles) : 0;
+    if (total < 1) continue; // legacy task: no per-task cycle choice
+    const c = remainingTaskCycles(task);
     if (Number.isFinite(c) && c > best) best = c;
   }
   if (best >= 1) return clampCycles(best, 1);
   return clampCycles(source.modeCycles, 1);
+}
+
+/**
+ * Nearest whole cycle count that fits a wall duration of `durationMins`
+ * (work + the breaks between cycles). Used by the day planner so resizing
+ * an event snaps the timer to a whole number of cycles — the event can
+ * never claim a length the session will not actually run.
+ */
+export function fitCyclesToDuration(
+  durationMins: number,
+  workMins: number,
+  breakMins: number
+): number {
+  const w = Math.max(1, workMins);
+  const b = Math.max(0, breakMins);
+  const dur = Math.max(0, durationMins);
+  return clampCycles(Math.round((dur + b) / (w + b)), 1);
 }

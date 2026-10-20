@@ -1,0 +1,26 @@
+{
+  "" : {
+    "const-values" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgets.build/Objects-normal/arm64/ControlWidgets-primary.swiftconstvalues",
+    "dependencies" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgets.build/Objects-normal/arm64/ControlWidgets-primary.d",
+    "diagnostics" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgets.build/Objects-normal/arm64/ControlWidgets-primary.dia",
+    "emit-module-dependencies" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgets.build/Objects-normal/arm64/ControlWidgets-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgets.build/Objects-normal/arm64/ControlWidgets-primary-emit-module.dia",
+    "pch" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgets.build/Objects-normal/arm64/ControlWidgets-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgets.build/Objects-normal/arm64/ControlWidgets-primary.swiftdeps"
+  },
+  "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/Sources/Host/ControlWidgetsApp.swift" : {
+    "index-unit-output-path" : "/ControlWidgets.build/Release/ControlWidgets.build/Objects-normal/arm64/ControlWidgetsApp.o",
+    "llvm-bc" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgets.build/Objects-normal/arm64/ControlWidgetsApp.bc",
+    "object" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgets.build/Objects-normal/arm64/ControlWidgetsApp.o"
+  },
+  "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/Sources/Shared/ControlProvider.swift" : {
+    "index-unit-output-path" : "/ControlWidgets.build/Release/ControlWidgets.build/Objects-normal/arm64/ControlProvider.o",
+    "llvm-bc" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgets.build/Objects-normal/arm64/ControlProvider.bc",
+    "object" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgets.build/Objects-normal/arm64/ControlProvider.o"
+  },
+  "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/Sources/Shared/WidgetModels.swift" : {
+    "index-unit-output-path" : "/ControlWidgets.build/Release/ControlWidgets.build/Objects-normal/arm64/WidgetModels.o",
+    "llvm-bc" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgets.build/Objects-normal/arm64/WidgetModels.bc",
+    "object" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgets.build/Objects-normal/arm64/WidgetModels.o"
+  }
+}

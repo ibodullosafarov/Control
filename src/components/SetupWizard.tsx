@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ThemeId } from '../types';
 import { THEMES } from '../styles/themes';
-import appIcon from '../assets/icon.png';
+import appIconLight from '../assets/icon-light.png';
+import appIconDark from '../assets/icon-dark.png';
 
 interface SetupWizardProps {
   theme: ThemeId;
@@ -16,6 +17,7 @@ interface SetupWizardProps {
 export const SetupWizard: React.FC<SetupWizardProps> = ({ theme, onComplete }) => {
   const currentTheme = THEMES[theme] || THEMES.serika;
   const isDark = currentTheme.isDark;
+  const appIcon = isDark ? appIconDark : appIconLight;
   const [name, setName] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 

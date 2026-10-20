@@ -11,7 +11,6 @@ import {
 } from '../types';
 import { THEMES } from '../styles/themes';
 import { sound } from '../services/sound';
-import { AuthPanel } from './AuthPanel';
 import { obsidianService, resolveTasksFolder } from '../services/obsidian';
 import { stripDateSuffix } from '../services/taskTitles';
 import { useGoogleSyncStatus } from '../services/googleSync';
@@ -118,8 +117,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   };
 
   // ── Automatic study-day execution ────────────────────────────────────────
+  // Mirrors `getAutoExecSettings` (autoExecPolicy): ON unless explicitly
+  // turned off — the day planner starts timers + blocking on its own.
   const autoExecute: AutoExecuteConfig = settings.autoExecute ?? {
-    enabled: false,
+    enabled: true,
     notifyLeadMinutes: 5,
   };
   const [execStatus, setExecStatus] = useState<AutoExecStatus | null>(null);
@@ -623,22 +624,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               })}
             </div>
           </div>
-        </div>
-
-        {/* Section 2: Personalization & Greeting */}
-        <div className="p-6 rounded-3xl liquid-glass border space-y-4">
-          <span
-            className="font-bold text-sm"
-            style={{ color: currentTheme.textPrimary }}
-          >
-            Online Account — internet rooms
-          </span>
-          <AuthPanel
-            theme={theme}
-            displayName={settings.userName || ''}
-            onDisplayNameChange={(name) => handleUpdate({ userName: name })}
-            compact
-          />
         </div>
 
         {/* Section 2b: Personalization & Greeting */}
@@ -1712,7 +1697,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </span>
                 </div>
                 <p className="text-xs font-medium mt-0.5" style={{ color: currentTheme.textSecondary }}>
-                  Remind before each planned session and start its control timer automatically
+                  On by default: when a planned block&apos;s time arrives, Control starts its timer and arms
+                  blocking automatically. Turn this off to run planned sessions manually.
                 </p>
               </div>
             </div>

@@ -92,6 +92,13 @@ export interface TaskItem {
    * Absent (older tasks) = follow the session/mode default at start time.
    */
   cycles?: number;
+  /**
+   * How many of `cycles` are already DONE (credited when each cycle
+   * finishes, not when the whole session ends). Starting the task again
+   * resumes at the next unfinished cycle and the planner/timer display
+   * "cycle x of z" against this number.
+   */
+  cyclesCompleted?: number;
   /** Planned effort in minutes, set by the user. */
   estimateMinutes?: number;
   /** Accumulated controlled minutes attributed from finished sessions. */
@@ -138,63 +145,6 @@ export interface DistractionEvent {
   /** Active session mode at the time, if any. */
   modeId?: string;
   modeName?: string;
-}
-
-// ── LAN control rooms (symbols mirror electron/rooms/net.ts) ────────────────
-
-/** One participant's published timer state. Epoch ms throughout. */
-export interface RoomTimerState {
-  phase: 'work' | 'break' | 'idle';
-  label: string;
-  endsAt: number | null;
-  updatedAt: number;
-}
-
-export interface RoomPeer {
-  id: string;
-  name: string;
-}
-
-export interface RoomsStatus {
-  hosting: boolean;
-  room: string | null;
-  port: number | null;
-  connected: boolean;
-  joinedRoom: string | null;
-  peers: RoomPeer[];
-  states: Record<string, RoomTimerState | null>;
-  localIps: string[];
-}
-
-export type RoomsEvent =
-  | { kind: 'roster'; peers: RoomPeer[]; states: Record<string, RoomTimerState | null> }
-  | { kind: 'status' }
-  | { kind: 'error'; error: string };
-
-/** A study topic inside an exam countdown. */
-export interface ExamTopic {
-  id: string;
-  name: string;
-  /** Target minutes of controlled work. */
-  targetMinutes: number;
-  /** Manually logged minutes so far. */
-  loggedMinutes: number;
-  /** Mode used when generating plan blocks for this topic. */
-  modeId?: string;
-}
-
-/** An exam countdown with a topic syllabus. */
-export interface Exam {
-  id: string;
-  name: string;
-  /** Exam day, local YYYY-MM-DD. */
-  date: string;
-  topics: ExamTopic[];
-  /** Minutes of exam prep per day used by the plan generator. */
-  dailyMinutes: number;
-  /** Default mode for generated blocks. */
-  modeId: string;
-  createdAt: string;
 }
 
 export interface ActiveSessionState {
@@ -249,6 +199,19 @@ export interface ActiveSessionState {
   longBreakInterval?: number;
   /** Per-task dwell seconds (taskId -> seconds in work phase). */
   taskDwellSeconds?: Record<string, number>;
+  /**
+   * Cycles of each task that were already completed BEFORE this session
+   * (snapshot of task.cyclesCompleted at start). Lets the timer display
+   * overall "cycle x of z" progress for a task resumed across sittings.
+   */
+  taskCycleOffsets?: Record<string, number>;
+  /**
+   * Planner block that launched this session (auto-run or manual Play).
+   * When the session's cycle finishes, the block is marked completed.
+   */
+  sourceBlockId?: string;
+  /** Day (YYYY-MM-DD) the sourceBlockId lives on. */
+  sourceBlockDate?: string;
 }
 
 export interface TraySessionInfo {
@@ -302,6 +265,11 @@ export interface ScheduleBlock {
   date: string; // YYYY-MM-DD
   startTime: string; // HH:mm
   endTime: string; // HH:mm
+  /**
+   * Mode this block is planned under. Empty string means "no mode" — a
+   * free-form plan entry that starts no timer and blocks nothing (it still
+   * mirrors into a task, with no mode attached).
+   */
   modeId: string;
   modeName: string;
   modeIcon: string;
@@ -343,6 +311,18 @@ export interface ScheduleBlock {
   timerEnabled?: boolean;
   /** Control Mode preference for this session. Undefined = follow the mode's rules. */
   controlMode?: boolean;
+  /**
+   * Task this block is one CONTROL CYCLE of (per-cycle scheduling). Blocks
+   * with a taskId are NOT mirrored into extra tasks — they run and credit
+   * the linked task instead.
+   */
+  taskId?: string;
+  /** Display title of the linked task (denormalized for calendars/exports). */
+  taskTitle?: string;
+  /** 1-based index of the task's cycle this block runs. */
+  cycleIndex?: number;
+  /** Total planned cycles of the linked task (for "Cycle x of z" labels). */
+  cyclesTotal?: number;
   /** Human-readable import anomaly (all-day clamp, overnight, +1h repair). */
   importWarning?: string;
   createdAt?: string;
@@ -639,8 +619,6 @@ export interface ControlAppData {
   activitySamples?: ActivitySample[];
   /** Distractions blocked during protected control time (capped). */
   distractions?: DistractionEvent[];
-  /** Exam countdowns with topic syllabi. */
-  exams?: Exam[];
   /** Quick notes. */
   notes?: Note[];
   /** User-created folders for organizing notes. */
@@ -779,6 +757,7 @@ declare global {
       updateTray: (text: string, title?: string, tooltip?: string) => Promise<void>;
       sendNotification: (title: string, body: string) => Promise<void>;
       setMinimalWindow: (isMinimal: boolean) => Promise<void>;
+      setDockIconAppearance: (isDark: boolean) => Promise<void>;
       syncToGoogleCalendar: (blocks: ScheduleBlock[], config: GoogleCalendarConfig) => Promise<{ success: boolean; syncedCount: number; error?: string }>;
       exportToIcs: (blocks: ScheduleBlock[]) => Promise<{ success: boolean; filePath?: string; error?: string }>;
       selectDirectory: () => Promise<{ canceled: boolean; filePaths: string[] }>;
@@ -798,15 +777,6 @@ declare global {
       saveQuickNote: (content: string) => Promise<{ success: boolean; note?: Note; error?: string }>;
       syncNotesToObsidian: (notes: Note[], folders: NoteFolder[], config: ObsidianConfig) => Promise<ObsidianSyncResult>;
       onNotesChanged: (callback: (notes: Note[]) => void) => () => void;
-      rooms: {
-        getStatus: () => Promise<RoomsStatus>;
-        hostStart: (room: string, name: string) => Promise<{ success: boolean; port?: number; error?: string }>;
-        hostStop: () => Promise<{ success: boolean }>;
-        publish: (state: RoomTimerState | null) => Promise<{ success: boolean }>;
-        join: (host: string, port: number, name: string) => Promise<{ success: boolean; error?: string }>;
-        leave: () => Promise<{ success: boolean }>;
-        onEvent: (callback: (event: RoomsEvent) => void) => () => void;
-      };
       getPurposeSessionRequest: () => Promise<PurposeSessionRequest | null>;
       acknowledgePurposeSessionRequest: (id: string) => Promise<boolean>;
       onPurposeSessionRequested: (callback: () => void) => () => void;

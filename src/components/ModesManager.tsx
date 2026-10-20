@@ -109,7 +109,7 @@ const [editingMode, setEditingMode] = useState<StudyMode | null>(null);
       alert('You must have at least one study mode.');
       return;
     }
-    // B-03: warn when tasks, planner blocks, exams, or the active session
+    // B-03: warn when tasks, planner blocks, or the active session
     // still reference this mode — deleting silently re-routes their timers.
     const refs: string[] = [];
     try {
@@ -120,8 +120,6 @@ const [editingMode, setEditingMode] = useState<StudyMode | null>(null);
         if (t) refs.push(`${t} task${t === 1 ? '' : 's'}`);
         const b = Object.values(parsed.plans || {}).flatMap((p: unknown) => (p as { blocks?: unknown[] }).blocks || []).filter((x) => (x as { modeId?: string }).modeId === modeId).length;
         if (b) refs.push(`${b} planner event${b === 1 ? '' : 's'}`);
-        const e = (parsed.exams || []).filter((x: { modeId?: string }) => x.modeId === modeId).length;
-        if (e) refs.push(`${e} exam${e === 1 ? '' : 's'}`);
         if (parsed.activeSession?.modeId === modeId) refs.push('the active session');
         if (parsed.settings?.defaultModeId === modeId) refs.push('the default mode');
       }

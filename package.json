@@ -6,15 +6,17 @@
   "scripts": {
     "dev:vite": "vite",
     "build:vite": "vite build",
-    "build:electron": "tsc -p tsconfig.electron.json",
-    "build": "vite build && tsc -p tsconfig.electron.json",
+    "build:electron": "rm -rf dist-electron && tsc -p tsconfig.electron.json",
+    "build": "vite build && npm run build:electron",
+    "icons": "bash scripts/build-icons.sh",
+    "widgets:build": "bash macos/ControlWidgets/bundle.sh",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
     "start": "electron .",
     "dev": "npm run build && electron .",
-    "package:mac": "npm run build && electron-builder --mac --dir",
-    "package:dmg": "npm run build && electron-builder --mac dmg",
-    "package": "npm run build && electron-builder --mac",
+    "package:mac": "npm run icons && npm run build && npm run widgets:build && electron-builder --mac --dir",
+    "package:dmg": "npm run icons && npm run build && npm run widgets:build && electron-builder --mac dmg",
+    "package": "npm run icons && npm run build && npm run widgets:build && electron-builder --mac",
     "install:app": "npm run package:mac && rm -rf /Applications/Control.app && cp -R release/mac-arm64/Control.app /Applications/Control.app"
   },
   "build": {
@@ -26,7 +28,10 @@
         "dmg",
         "dir"
       ],
-      "icon": "assets/AppIcon.icns"
+      "icon": "build/AppIcon.icns",
+      "extendInfo": {
+        "CFBundleIconName": "AppIcon"
+      }
     },
     "dmg": {
       "window": {
@@ -57,6 +62,18 @@
       "logo.png",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "build/Assets.car",
+        "to": "Assets.car"
+      },
+      {
+        "from": "build/widgets",
+        "to": "widgets",
+        "filter": ["**/*"]
+      }
+    ],
+    "afterPack": "scripts/embed-widget.js",
     "directories": {
       "output": "release"
     },
@@ -95,7 +112,6 @@
     "vitest": "^5.0.3"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.117.3",
     "canvas-confetti": "^1.9.4",
     "date-fns": "^4.4.0",
     "electron-updater": "^6.8.9",

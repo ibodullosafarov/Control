@@ -1,13 +1,14 @@
 import React from 'react';
 import {
   CheckSquare, Timer, Shield, Calendar, Sliders, BarChart3, Settings,
-  Moon, Sun, Power, Search, Users, StickyNote
+  Moon, Sun, Power, Search, StickyNote
 } from 'lucide-react';
 import { ThemeId, ActiveSessionState } from '../types';
 import { THEMES } from '../styles/themes';
-import appIcon from '../assets/icon.png';
+import appIconLight from '../assets/icon-light.png';
+import appIconDark from '../assets/icon-dark.png';
 
-export type NavTab = 'tasks' | 'launcher' | 'timer' | 'modes' | 'planner' | 'blocker' | 'history' | 'settings' | 'rooms' | 'notes';
+export type NavTab = 'tasks' | 'launcher' | 'timer' | 'modes' | 'planner' | 'blocker' | 'history' | 'settings' | 'notes';
 
 interface HeaderProps {
   activeTab: NavTab;
@@ -30,6 +31,7 @@ export const Header: React.FC<HeaderProps> = ({
 }) => {
   const currentTheme = THEMES[theme] || THEMES.serika;
   const isDark = currentTheme.isDark;
+  const appIcon = isDark ? appIconDark : appIconLight;
 
   return (
     <header
@@ -213,24 +215,6 @@ export const Header: React.FC<HeaderProps> = ({
           <span>Stats</span>
         </button>
 
-        {/* Tab: Control Rooms */}
-        <button
-          onClick={() => onSelectTab('rooms')}
-          className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all duration-200 cursor-pointer ${
-            activeTab === 'rooms'
-              ? isDark
-                ? 'bg-white/15 text-white shadow-[inset_0_1px_1px_rgba(255,255,255,0.25),0_4px_12px_rgba(0,0,0,0.3)] border border-white/15'
-                : 'bg-white text-zinc-900 shadow-md border border-black/8 font-bold'
-              : isDark
-              ? 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5 border border-transparent'
-              : 'text-zinc-600 hover:text-zinc-900 hover:bg-black/5 border border-transparent'
-          }`}
-          title="Control Rooms [7]"
-        >
-          <Users className="w-3.5 h-3.5 text-orange-500" />
-          <span>Rooms</span>
-        </button>
-
         {/* Tab: Notes */}
         <button
           onClick={() => onSelectTab('notes')}
@@ -243,7 +227,7 @@ export const Header: React.FC<HeaderProps> = ({
               ? 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5 border border-transparent'
               : 'text-zinc-600 hover:text-zinc-900 hover:bg-black/5 border border-transparent'
           }`}
-          title="Notes [8]"
+          title="Notes [7]"
         >
           <StickyNote className="w-3.5 h-3.5 text-amber-500" />
           <span>Notes</span>
@@ -277,7 +261,7 @@ export const Header: React.FC<HeaderProps> = ({
             color: activeTab === 'settings' ? currentTheme.accent : currentTheme.textSecondary,
             backgroundColor: activeTab === 'settings' ? (isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.08)') : undefined,
           }}
-          title="Settings [9]"
+          title="Settings [8]"
         >
           <Settings className="w-3.5 h-3.5 hover:rotate-90 transition-transform duration-500" />
         </button>

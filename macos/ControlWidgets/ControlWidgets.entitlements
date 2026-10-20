@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Widget extensions must be sandboxed to be registered by PlugInKit.
+	     macOS only lists widget extensions that carry a sandbox + application
+	     identifier, even for local/ad-hoc builds. -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<key>com.apple.application-identifier</key>
+	<string>com.control.widgets.ControlWidgets</string>
+	<!-- The extension reads the snapshot the app publishes to ~/.control-app.
+	     An App Group would be cleaner but needs a paid signing team, so we use
+	     a read-only home-relative temporary exception instead. -->
+	<key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>
+	<array>
+		<string>/.control-app/</string>
+	</array>
+</dict>
+</plist>

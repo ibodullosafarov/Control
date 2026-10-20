@@ -1,0 +1,46 @@
+{
+  "" : {
+    "const-values" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/ControlWidgetsExtension-primary.swiftconstvalues",
+    "dependencies" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/ControlWidgetsExtension-primary.d",
+    "diagnostics" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/ControlWidgetsExtension-primary.dia",
+    "emit-module-dependencies" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/ControlWidgetsExtension-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/ControlWidgetsExtension-primary-emit-module.dia",
+    "pch" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/ControlWidgetsExtension-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/ControlWidgetsExtension-primary.swiftdeps"
+  },
+  "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/Sources/Shared/ControlProvider.swift" : {
+    "index-unit-output-path" : "/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/ControlProvider.o",
+    "llvm-bc" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/ControlProvider.bc",
+    "object" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/ControlProvider.o"
+  },
+  "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/Sources/Shared/WidgetModels.swift" : {
+    "index-unit-output-path" : "/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/WidgetModels.o",
+    "llvm-bc" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/WidgetModels.bc",
+    "object" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/WidgetModels.o"
+  },
+  "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/Sources/Widgets/ControlWidgetsBundle.swift" : {
+    "index-unit-output-path" : "/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/ControlWidgetsBundle.o",
+    "llvm-bc" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/ControlWidgetsBundle.bc",
+    "object" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/ControlWidgetsBundle.o"
+  },
+  "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/Sources/Widgets/FocusTimerWidget.swift" : {
+    "index-unit-output-path" : "/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/FocusTimerWidget.o",
+    "llvm-bc" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/FocusTimerWidget.bc",
+    "object" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/FocusTimerWidget.o"
+  },
+  "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/Sources/Widgets/QuickNoteWidget.swift" : {
+    "index-unit-output-path" : "/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/QuickNoteWidget.o",
+    "llvm-bc" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/QuickNoteWidget.bc",
+    "object" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/QuickNoteWidget.o"
+  },
+  "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/Sources/Widgets/QuickStatsWidget.swift" : {
+    "index-unit-output-path" : "/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/QuickStatsWidget.o",
+    "llvm-bc" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/QuickStatsWidget.bc",
+    "object" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/QuickStatsWidget.o"
+  },
+  "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/Sources/Widgets/TodayPlanWidget.swift" : {
+    "index-unit-output-path" : "/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/TodayPlanWidget.o",
+    "llvm-bc" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/TodayPlanWidget.bc",
+    "object" : "/Users/ibodullo/PARA/Projects/Apps/Control/macos/ControlWidgets/build/dd/Build/Intermediates.noindex/ControlWidgets.build/Release/ControlWidgetsExtension.build/Objects-normal/arm64/TodayPlanWidget.o"
+  }
+}

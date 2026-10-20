@@ -1016,9 +1016,15 @@ export const TasksView: React.FC<TasksViewProps> = ({
                             style={{
                               backgroundColor: isDark ? 'rgba(56,189,248,0.12)' : 'rgba(56,189,248,0.12)',
                             }}
-                            title={`${task.cycles} control blocks — chosen when this task was created`}
+                            title={
+                              (task.cyclesCompleted || 0) > 0
+                                ? `${task.cyclesCompleted}/${task.cycles} control blocks done — starting resumes at cycle ${(task.cyclesCompleted || 0) + 1}`
+                                : `${task.cycles} control blocks — chosen when this task was created`
+                            }
                           >
-                            ×{task.cycles}
+                            {(task.cyclesCompleted || 0) > 0
+                              ? `${task.cyclesCompleted}/${task.cycles} ✓`
+                              : `×${task.cycles}`}
                           </span>
                         )}
                         {renderEstActual(task)}
@@ -1069,7 +1075,11 @@ export const TasksView: React.FC<TasksViewProps> = ({
                         backgroundColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.06)',
                         color: currentTheme.textPrimary,
                       }}
-                      title="Control on this task next"
+                      title={
+                        (task.cyclesCompleted || 0) > 0 && task.cycles
+                          ? `Resume — ${task.cyclesCompleted}/${task.cycles} cycles done, starting at cycle ${(task.cyclesCompleted || 0) + 1}`
+                          : 'Control on this task next'
+                      }
                     >
                       <Play className="w-2.5 h-2.5 fill-current" />
                       <span>Control</span>

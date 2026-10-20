@@ -3,7 +3,7 @@ import { INITIAL_APP_DATA } from './defaultData';
 import { dropOrphanFolderIds, sanitizeModeFolders } from './modeFolders';
 import { repairBlocklist } from './domains';
 import { isBreakTitle } from './scheduleTemplates';
-import type { ActivitySample, DistractionEvent, Exam, ControlSession, Note, NoteFolder } from '../types';
+import type { ActivitySample, DistractionEvent, ControlSession, Note, NoteFolder } from '../types';
 import { migrateLegacyFieldNames } from './legacyFields';
 
 const ACTIVITY_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
@@ -85,42 +85,6 @@ function sanitizeNotes(raw: unknown): Note[] {
     out.push(note);
   }
   return out.slice(-MAX_NOTES);
-}
-
-function sanitizeExams(raw: unknown): Exam[] {  if (!Array.isArray(raw)) return [];
-  const out: Exam[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== 'object') continue;
-    const rec = item as Record<string, unknown>;
-    if (typeof rec.id !== 'string' || !rec.id) continue;
-    if (typeof rec.name !== 'string' || !rec.name.trim()) continue;
-    if (typeof rec.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(rec.date)) continue;
-    const topics = Array.isArray(rec.topics)
-      ? rec.topics.flatMap((t) => {
-          if (!t || typeof t !== 'object') return [];
-          const tr = t as Record<string, unknown>;
-          if (typeof tr.id !== 'string' || !tr.id) return [];
-          if (typeof tr.name !== 'string' || !tr.name.trim()) return [];
-          return [{
-            id: tr.id,
-            name: tr.name.trim(),
-            targetMinutes: typeof tr.targetMinutes === 'number' && tr.targetMinutes > 0 ? Math.round(tr.targetMinutes) : 0,
-            loggedMinutes: typeof tr.loggedMinutes === 'number' && tr.loggedMinutes > 0 ? Math.round(tr.loggedMinutes) : 0,
-            ...(typeof tr.modeId === 'string' ? { modeId: tr.modeId } : {}),
-          }];
-        })
-      : [];
-    out.push({
-      id: rec.id,
-      name: rec.name.trim(),
-      date: rec.date,
-      topics,
-      dailyMinutes: typeof rec.dailyMinutes === 'number' && rec.dailyMinutes > 0 ? Math.round(rec.dailyMinutes) : 60,
-      modeId: typeof rec.modeId === 'string' ? rec.modeId : '',
-      createdAt: typeof rec.createdAt === 'string' ? rec.createdAt : new Date().toISOString(),
-    });
-  }
-  return out;
 }
 
 function migrateModes(modes: StudyMode[]): StudyMode[] {
@@ -271,12 +235,14 @@ export function normalizeData(raw: ControlAppData): ControlAppData {
       (raw as { activitySamples?: unknown }).activitySamples
     ),
     distractions: sanitizeDistractions((raw as { distractions?: unknown }).distractions),
-    exams: sanitizeExams((raw as { exams?: unknown }).exams),
     notes: sanitizeNotes((raw as { notes?: unknown }).notes),
     noteFolders: sanitizeNoteFolders((raw as { noteFolders?: unknown }).noteFolders),
     tasks: raw.tasks && Array.isArray(raw.tasks) ? raw.tasks : INITIAL_APP_DATA.tasks,
     activeSession: migrateActiveSession(raw.activeSession),
   };
+  // The exams feature was removed — drop any persisted countdowns on load so
+  // they don't linger in saved data forever.
+  delete (normalized as { exams?: unknown }).exams;
   // Migration: task notes moved from <vault>/Control Tasks/ into
   // <vault>/Control/Tasks/ — the old default folder name is no longer valid.
   if (normalized.settings.obsidian && normalized.settings.obsidian.folderName === 'Control Tasks') {
@@ -325,9 +291,7 @@ function richness(d: ControlAppData | null): number {
   if (d.plans && Object.keys(d.plans).length) r += 2;
   if (d.tasks && d.tasks.length) r += 1;
   const notes = (d as { notes?: unknown }).notes;
-  const exams = (d as { exams?: unknown }).exams;
   if (Array.isArray(notes) && notes.length) r += 2;
-  if (Array.isArray(exams) && exams.length) r += 2;
   if (d.settings && d.settings.obsidian && d.settings.obsidian.enabled) r += 4;
   if (d.settings && d.settings.googleCalendar && d.settings.googleCalendar.connected) r += 1;
   return r;

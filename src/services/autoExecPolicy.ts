@@ -88,7 +88,10 @@ export function getAutoExecSettings(data: ControlAppData): {
   if (typeof cfg?.notifyLeadMinutes === 'number' && Number.isFinite(cfg.notifyLeadMinutes)) {
     lead = Math.max(MIN_NOTIFY_LEAD_MINUTES, Math.min(MAX_NOTIFY_LEAD_MINUTES, Math.round(cfg.notifyLeadMinutes)));
   }
-  return { enabled: cfg?.enabled === true, notifyLeadMinutes: lead };
+  // ON BY DEFAULT: the day planner is the source of truth — its blocks start
+  // the timer and arm blocking when their time arrives. Users opt OUT in
+  // Settings (`enabled: false`), never the other way around.
+  return { enabled: cfg?.enabled !== false, notifyLeadMinutes: lead };
 }
 
 function isEligible(block: ScheduleBlock, modes: StudyMode[]): boolean {

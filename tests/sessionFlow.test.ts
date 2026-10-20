@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clampCycles, isSingleBlockMode, resolveSessionCycles, resolveWorkCompletion, sessionWallMinutes } from '../src/services/sessionFlow';
+import { clampCycles, fitCyclesToDuration, isSingleBlockMode, remainingTaskCycles, resolveSessionCycles, resolveWorkCompletion, sessionWallMinutes } from '../src/services/sessionFlow';
 
 describe('resolveWorkCompletion', () => {
   it('completes a single-cycle mode right after its one work phase (no trailing break)', () => {
@@ -57,6 +57,38 @@ describe('resolveSessionCycles', () => {
   it('never drops below one cycle', () => {
     expect(resolveSessionCycles({ tasks, taskIds: [], modeCycles: 0 })).toBe(1);
     expect(resolveSessionCycles({ tasks, taskIds: ['a'], modeCycles: 3, overrideCycles: 0 })).toBe(1);
+  });
+});
+
+describe('remainingTaskCycles + resume', () => {
+  it('subtracts already-done cycles so a resumed task picks up where it left off', () => {
+    expect(remainingTaskCycles({ cycles: 8 })).toBe(8);
+    expect(remainingTaskCycles({ cycles: 8, cyclesCompleted: 3 })).toBe(5);
+    expect(remainingTaskCycles({ cycles: 8, cyclesCompleted: 99 })).toBe(1);
+    expect(remainingTaskCycles({})).toBe(1);
+  });
+
+  it('resolveSessionCycles uses the REMAINING count, not the original total', () => {
+    const t = [
+      { id: 'resumed', cycles: 8, cyclesCompleted: 3 },
+      { id: 'fresh', cycles: 4 },
+      { id: 'legacy' },
+    ];
+    expect(resolveSessionCycles({ tasks: t, taskIds: ['resumed'], modeCycles: 3 })).toBe(5);
+    expect(resolveSessionCycles({ tasks: t, taskIds: ['resumed', 'fresh'], modeCycles: 3 })).toBe(5);
+    expect(resolveSessionCycles({ tasks: t, taskIds: ['resumed'], modeCycles: 3, overrideCycles: 1 })).toBe(1);
+  });
+});
+
+describe('fitCyclesToDuration', () => {
+  it('snaps an arbitrary wall length to the nearest whole cycle count', () => {
+    // 25 work / 7 break: wall(c) = 25c + 7(c-1)
+    expect(fitCyclesToDuration(25, 25, 7)).toBe(1);
+    expect(fitCyclesToDuration(57, 25, 7)).toBe(2);
+    expect(fitCyclesToDuration(64, 25, 7)).toBe(2);
+    expect(fitCyclesToDuration(89, 25, 7)).toBe(3);
+    expect(fitCyclesToDuration(10, 25, 7)).toBe(1); // never below one
+    expect(fitCyclesToDuration(10000, 25, 7)).toBe(12); // clamped
   });
 });
 

@@ -113,9 +113,14 @@ function occAt(startMin: number, durMin = 60, id = 'b1'): PolicyOccurrence {
 }
 
 describe('settings + keys', () => {
-  it('defaults to disabled with a 5 minute lead', () => {
+  it('is ON by default with a 5 minute lead (planner drives the timer)', () => {
     const s = getAutoExecSettings(makeData([], { autoExecute: undefined }));
-    expect(s).toEqual({ enabled: false, notifyLeadMinutes: DEFAULT_NOTIFY_LEAD_MINUTES });
+    expect(s).toEqual({ enabled: true, notifyLeadMinutes: DEFAULT_NOTIFY_LEAD_MINUTES });
+  });
+
+  it('can be opted out explicitly', () => {
+    const s = getAutoExecSettings(makeData([], { autoExecute: { enabled: false, notifyLeadMinutes: 5 } }));
+    expect(s.enabled).toBe(false);
   });
 
   it('clamps the lead time into range', () => {

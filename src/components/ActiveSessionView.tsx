@@ -17,6 +17,13 @@ interface ActiveSessionViewProps {
   onSwitchModeForRemaining?: (modeId: string) => void;
   onUpdateSessionState: (updated: ActiveSessionState) => void;
   onUpdateTask: (task: TaskItem) => void;
+  /**
+   * Called exactly once whenever a work cycle finishes (natural end or
+   * skip). `taskId` is the task assigned to that cycle slot, so the app can
+   * credit task.cyclesCompleted and mark the planner block for this cycle
+   * done — progress survives pauses, cancels and restarts.
+   */
+  onCycleCompleted?: (taskId: string | null) => void;
   onAddTask: (title: string, modeId?: string) => TaskItem;
   onAddQueueTask?: (title: string) => TaskItem;
   onAddExistingTaskToQueue?: (taskId: string) => void;
@@ -39,6 +46,7 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
   onSwitchModeForRemaining,
   onUpdateSessionState,
   onUpdateTask,
+  onCycleCompleted,
   onAddTask,
   onAddQueueTask,
   onAddExistingTaskToQueue,
@@ -262,6 +270,53 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
     [sessionState, sessionTasks, completedSessionTasks, onFinishSession]
   );
 
+  // ── Overall task progress: "cycle x of z" across sittings ──────────────
+  // A resumed task session only holds the REMAINING cycles, so the visible
+  // position adds the pre-session offset (snapshot of task.cyclesCompleted).
+  const progressTask = sessionTasks.length === 1 ? sessionTasks[0] : null;
+  const progressOffset = progressTask ? sessionState.taskCycleOffsets?.[progressTask.id] || 0 : 0;
+  const overallCurrent = progressOffset + sessionState.currentCycle;
+  const overallTotal =
+    progressTask && typeof progressTask.cycles === 'number' && progressTask.cycles > 0
+      ? Math.max(progressTask.cycles, overallCurrent)
+      : sessionState.totalCycles;
+  const cyclesPart = sessionState.isChillMode ? 'Chill Mode' : `Cycle ${overallCurrent} / ${overallTotal}`;
+
+  // ── Cycle-boundary leave lock ──────────────────────────────────────────
+  // Pausing is always allowed, but a task may not be LEFT mid-cycle: Finish
+  // and Exit unlock the moment the current cycle ends (break phase or end
+  // of session). Skipping the phase [N] ends the cycle early, so it also
+  // unlocks leaving. Scheduled auto-run ends bypass this on purpose.
+  const cycleInFlight = !sessionState.isChillMode && sessionState.phase === 'work';
+  const cycleLockReason = cycleInFlight
+    ? `Finish the current cycle first — Cycle ${overallCurrent} of ${overallTotal} is still running`
+    : undefined;
+  const [leaveBlockedFlash, setLeaveBlockedFlash] = useState<boolean>(false);
+  const leaveFlashTimerRef = React.useRef<number | null>(null);
+  React.useEffect(() => () => {
+    if (leaveFlashTimerRef.current) window.clearTimeout(leaveFlashTimerRef.current);
+  }, []);
+  const showLeaveBlocked = useCallback(() => {
+    setLeaveBlockedFlash(true);
+    if (leaveFlashTimerRef.current) window.clearTimeout(leaveFlashTimerRef.current);
+    leaveFlashTimerRef.current = window.setTimeout(() => setLeaveBlockedFlash(false), 3200);
+  }, []);
+  const attemptLeave = useCallback(() => {
+    if (!cycleInFlight) {
+      onRequestLeave();
+      return;
+    }
+    showLeaveBlocked();
+  }, [cycleInFlight, onRequestLeave, showLeaveBlocked]);
+  // Finish-early guard shared by the button, the [F] key and the tray.
+  const attemptFinish = useCallback(() => {
+    if (cycleInFlight) {
+      showLeaveBlocked();
+      return;
+    }
+    completeSession('completed');
+  }, [cycleInFlight, completeSession, showLeaveBlocked]);
+
   // External completion (auto-execution scheduler reached the block's end).
   // Guarded by a monotonic counter so StrictMode double-effects and unrelated
   // re-renders can never complete the session twice.
@@ -349,6 +404,12 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
       pendingSkipsRef.current = 0;
       const baseSkipped = (sessionState as unknown as { skippedPhases?: number }).skippedPhases || 0;
 
+      // Credit the finished cycle NOW, not at session end: tasks resume
+      // across sittings, so a cycle done must survive a later cancel/quit.
+      const cycleTaskId =
+        sessionState.taskIds[sessionState.currentCycle - 1] || sessionState.activeTaskId || null;
+      onCycleCompleted?.(cycleTaskId);
+
       if (resolveWorkCompletion(sessionState.completedCyclesCount, sessionState.totalCycles) === 'complete') {
         playSound('complete');
         confetti({ particleCount: 120, spread: 80, origin: { y: 0.5 } });
@@ -373,9 +434,17 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
       playSound('break');
 
       if (window.controlAPI?.sendNotification) {
+        // Overall position across sittings: offset + this session's cycles.
+        const doneTask = cycleTaskId ? allTasks.find((t) => t.id === cycleTaskId) : null;
+        const doneBefore = (doneTask && sessionState.taskCycleOffsets?.[cycleTaskId || '']) || 0;
+        const doneOverall = doneBefore + nextCompletedCycles;
+        const doneTotal =
+          doneTask && typeof doneTask.cycles === 'number' && doneTask.cycles > 0
+            ? Math.max(doneTask.cycles, doneOverall)
+            : sessionState.totalCycles;
         window.controlAPI.sendNotification(
           isLong ? '☕ Time for a Long Break' : '☕ Time for a Break',
-          `Cycle ${sessionState.currentCycle} of ${sessionState.totalCycles} done. Take a ${Math.round(breakSecs / 60)}m ${isLong ? 'long ' : ''}break.`
+          `Cycle ${doneOverall} of ${doneTotal} done. Take a ${Math.round(breakSecs / 60)}m ${isLong ? 'long ' : ''}break.`
         );
       }
 
@@ -408,9 +477,16 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
         : (remainingSessionTasks.find((t) => t.id !== cycleTaskId)?.id || sessionState.activeTaskId);
 
       if (window.controlAPI?.sendNotification) {
+        const upcomingTask = cycleTaskId ? allTasks.find((t) => t.id === cycleTaskId) : null;
+        const upcomingBefore = (upcomingTask && sessionState.taskCycleOffsets?.[cycleTaskId || '']) || 0;
+        const upcomingOverall = upcomingBefore + nextCycle;
+        const upcomingTotal =
+          upcomingTask && typeof upcomingTask.cycles === 'number' && upcomingTask.cycles > 0
+            ? Math.max(upcomingTask.cycles, upcomingOverall)
+            : sessionState.totalCycles;
         window.controlAPI.sendNotification(
           '🎯 Break Ended',
-          `Starting Cycle ${nextCycle} of ${sessionState.totalCycles} for ${sessionState.modeName}.`
+          `Starting cycle ${upcomingOverall} of ${upcomingTotal} for ${sessionState.modeName}.`
         );
       }
 
@@ -436,7 +512,7 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
     } finally {
       transitioningRef.current = false;
     }
-  }, [sessionState, allTasks, remainingSessionTasks, settings.autoStartBreaks, settings.autoStartWork, playSound, completeSession, onUpdateSessionState]);
+  }, [sessionState, allTasks, remainingSessionTasks, settings.autoStartBreaks, settings.autoStartWork, playSound, completeSession, onUpdateSessionState, onCycleCompleted]);
   useEffect(() => { handlePhaseCompleteRef.current = handlePhaseComplete; }, [handlePhaseComplete]);
 
   // D5 fix: wall-clock accrual (no tick-count drift) + single atomic persist
@@ -524,12 +600,13 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
       } else if (action === 'nextTask') {
         handleCompleteCurrentTask();
       } else if (action === 'endSession') {
-        completeSession('completed');
+        // Cycle-boundary lock applies to the tray too.
+        attemptFinish();
       }
     });
 
     return cleanup;
-  }, [togglePause, handleCompleteCurrentTask, completeSession]);
+  }, [togglePause, handleCompleteCurrentTask, attemptFinish]);
 
   // Keyboard Shortcuts
   useEffect(() => {
@@ -544,10 +621,10 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
         handleSkipPhase();
       } else if (e.key.toLowerCase() === 'f') {
         e.preventDefault();
-        completeSession('completed');
+        attemptFinish();
       } else if (e.key === 'Escape') {
         e.preventDefault();
-        onRequestLeave();
+        attemptLeave();
       } else if (e.key.toLowerCase() === 'm') {
         setIsMuted((m) => !m);
       }
@@ -555,7 +632,7 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [togglePause, handleSkipPhase, completeSession, onRequestLeave]);
+  }, [togglePause, handleSkipPhase, attemptFinish, attemptLeave]);
 
   // Add quick task mid-session
   const handleAddQuickTask = (e: React.FormEvent) => {
@@ -624,14 +701,29 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
 
       {/* 1. Top Bar Controls */}
       <div className="w-full flex items-center justify-between z-10">
-        <button
-          onClick={onRequestLeave}
-          className="flex items-center space-x-2 px-3.5 py-1.5 rounded-full liquid-glass text-xs font-semibold transition-all active:scale-95 cursor-pointer"
-          style={{ color: currentTheme.textSecondary }}
-        >
-          <ArrowLeft className="w-3.5 h-3.5" />
-          <span>Exit Session [Esc]</span>
-        </button>
+        <div className="flex items-center space-x-2">
+          <button
+            onClick={attemptLeave}
+            title={cycleLockReason}
+            className={`flex items-center space-x-2 px-3.5 py-1.5 rounded-full liquid-glass text-xs font-semibold transition-all active:scale-95 ${cycleInFlight ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
+            style={{ color: cycleInFlight ? currentTheme.textMuted : currentTheme.textSecondary }}
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            <span>Exit Session [Esc]</span>
+          </button>
+          {leaveBlockedFlash && (
+            <span
+              className="px-3 py-1.5 rounded-full text-[11px] font-bold border animate-pulse"
+              style={{
+                backgroundColor: 'rgba(244, 63, 94, 0.15)',
+                borderColor: 'rgba(244, 63, 94, 0.45)',
+                color: '#f43f5e',
+              }}
+            >
+              {cycleLockReason}
+            </span>
+          )}
+        </div>
 
         {/* Center Mode Name & Cycle Counter */}
         <div className="flex items-center space-x-2.5 px-4 py-1.5 rounded-full liquid-glass-dock">
@@ -646,7 +738,7 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
             className="text-xs font-mono"
             style={{ color: currentTheme.textSecondary }}
           >
-            · {sessionState.isChillMode ? 'Chill Mode' : `Cycle ${sessionState.currentCycle} / ${sessionState.totalCycles}`}
+            · {cyclesPart}
           </span>
         </div>
 
@@ -753,7 +845,7 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
               <span>
                 {sessionState.isChillMode
                   ? 'CURRENT CONTROL TARGET'
-                  : `CYCLE ${sessionState.currentCycle} OF ${sessionState.totalCycles} TARGET`}
+                  : `CYCLE ${overallCurrent} OF ${overallTotal} TARGET`}
               </span>
             </span>
             <span 
@@ -1028,9 +1120,9 @@ export const ActiveSessionView: React.FC<ActiveSessionViewProps> = ({
           )}
 
           <button
-            onClick={() => completeSession('completed')}
-            className="flex items-center space-x-2 px-5 py-3 rounded-2xl liquid-glass border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 text-xs font-bold transition-all cursor-pointer"
-            title="Finish Session Early [F]"
+            onClick={attemptFinish}
+            className={`flex items-center space-x-2 px-5 py-3 rounded-2xl liquid-glass border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 text-xs font-bold transition-all ${cycleInFlight ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+            title={cycleLockReason || 'Finish Session Early [F]'}
           >
             <CheckCircle2 className="w-4 h-4" />
             <span>Finish [F]</span>
