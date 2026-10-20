@@ -657,6 +657,21 @@ export interface PurposeSessionRequest {
   purpose: string;
 }
 
+/** External companion command queued through the control:// scheme. */
+export type CompanionCommandAction = 'note.upsert' | 'note.delete';
+
+export interface CompanionCommand {
+  version: 1;
+  id: string;
+  createdAt: string;
+  action: CompanionCommandAction;
+  note?: {
+    id?: string;
+    content?: string;
+    folderId?: string;
+  };
+}
+
 export interface InstalledAppInfo {
   name: string;
   path: string;
@@ -777,6 +792,9 @@ declare global {
       saveQuickNote: (content: string) => Promise<{ success: boolean; note?: Note; error?: string }>;
       syncNotesToObsidian: (notes: Note[], folders: NoteFolder[], config: ObsidianConfig) => Promise<ObsidianSyncResult>;
       onNotesChanged: (callback: (notes: Note[]) => void) => () => void;
+      getCompanionCommand: () => Promise<CompanionCommand | null>;
+      acknowledgeCompanionCommand: (id: string) => Promise<boolean>;
+      onCompanionCommand: (callback: (command: CompanionCommand) => void) => () => void;
       getPurposeSessionRequest: () => Promise<PurposeSessionRequest | null>;
       acknowledgePurposeSessionRequest: (id: string) => Promise<boolean>;
       onPurposeSessionRequested: (callback: () => void) => () => void;

@@ -53,6 +53,8 @@ describe('Roleplay audit fixes', () => {
           date: '2026-10-20',
           goals: [],
           timeWindows: [],
+          isApproved: true,
+          updatedAt: '2026-10-20T10:00:00Z',
           blocks: [
             {
               id: 'block-day1',
@@ -74,6 +76,8 @@ describe('Roleplay audit fixes', () => {
           date: '2026-10-21',
           goals: [],
           timeWindows: [],
+          isApproved: true,
+          updatedAt: '2026-10-20T10:00:00Z',
           blocks: [
             {
               id: 'block-day2',
@@ -137,6 +141,8 @@ describe('Roleplay audit fixes', () => {
           date: '2026-10-20',
           goals: [],
           timeWindows: [],
+          isApproved: true,
+          updatedAt: '2026-10-20T10:00:00Z',
           blocks: [
             {
               id: 'block-1',

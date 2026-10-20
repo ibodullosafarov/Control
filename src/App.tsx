@@ -12,6 +12,7 @@ import {
   ActiveSessionState,
   TaskItem,
   PurposeSessionRequest,
+  CompanionCommand,
 } from './types';
 import { INITIAL_APP_DATA } from './services/defaultData';
 import { storage } from './services/storage';
@@ -248,6 +249,54 @@ export const App: React.FC = () => {
         if (fresh.length === 0) return prev;
         return { ...prev, notes: [...(prev.notes || []), ...fresh] };
       });
+    });
+  }, [updateAndPersistData]);
+
+  // ── Companion commands (notes from Relay) ─────────────────────────────
+  // Control remains the source of truth: Relay only asks for a change and
+  // Control applies it to the same store the UI and widgets use.
+  useEffect(() => {
+    const api = window.controlAPI;
+    if (!api?.onCompanionCommand) return;
+    return api.onCompanionCommand((command: CompanionCommand) => {
+      if (!command || !command.note) return;
+      if (command.action === 'note.upsert') {
+        const content = (command.note.content || '').slice(0, 20000);
+        if (!content.trim()) return;
+        const now = new Date().toISOString();
+        updateAndPersistData((prev) => {
+          const notes = prev.notes || [];
+          const index = command.note?.id ? notes.findIndex((n) => n.id === command.note!.id) : -1;
+          if (index >= 0) {
+            const existing = notes[index];
+            const updated: Note = {
+              ...existing,
+              content,
+              updatedAt: now,
+              ...(command.note?.folderId !== undefined
+                ? { folderId: command.note.folderId || undefined }
+                : {}),
+            };
+            const nextNotes = [...notes];
+            nextNotes[index] = updated;
+            return { ...prev, notes: nextNotes };
+          }
+          const note: Note = {
+            id: command.note?.id || `note-relay-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            content,
+            createdAt: now,
+            updatedAt: now,
+            ...(command.note?.folderId ? { folderId: command.note.folderId } : {}),
+          };
+          return { ...prev, notes: [...notes, note].slice(-2000) };
+        });
+      } else if (command.action === 'note.delete' && command.note.id) {
+        updateAndPersistData((prev) => ({
+          ...prev,
+          notes: (prev.notes || []).filter((note) => note.id !== command.note!.id),
+        }));
+      }
+      api.acknowledgeCompanionCommand(command.id).catch(() => undefined);
     });
   }, [updateAndPersistData]);
 

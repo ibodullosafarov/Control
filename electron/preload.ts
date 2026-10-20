@@ -8,6 +8,7 @@ import {
   GoogleSyncStatus, GoogleApplyMutations, GoogleApplyResult, GoogleConnectResult,
   GoogleDisconnectResult, GoogleListCalendarsResult, GoogleSyncNowResult,
   AutoExecStatus, AutoExecStartRequest, AutoExecStartResult, AutoExecEndRequest, AutoExecEndResult,
+  CompanionCommand,
 } from '../src/types';
 
 contextBridge.exposeInMainWorld('controlAPI', {
@@ -93,6 +94,17 @@ contextBridge.exposeInMainWorld('controlAPI', {
   },
   syncNotesToObsidian: (notes: Note[], folders: NoteFolder[], config: ObsidianConfig): Promise<ObsidianSyncResult> =>
     ipcRenderer.invoke('control:syncNotesToObsidian', notes, folders, config),
+  getCompanionCommand: (): Promise<CompanionCommand | null> =>
+    ipcRenderer.invoke('control:getCompanionCommand'),
+  acknowledgeCompanionCommand: (id: string): Promise<boolean> =>
+    ipcRenderer.invoke('control:acknowledgeCompanionCommand', id),
+  onCompanionCommand: (callback: (command: CompanionCommand) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, command: CompanionCommand) => callback(command);
+    ipcRenderer.on('control:companionCommand', handler);
+    return () => {
+      ipcRenderer.removeListener('control:companionCommand', handler);
+    };
+  },
   getPurposeSessionRequest: (): Promise<PurposeSessionRequest | null> =>
     ipcRenderer.invoke('control:getPurposeSessionRequest'),
   acknowledgePurposeSessionRequest: (id: string): Promise<boolean> =>

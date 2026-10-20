@@ -19,6 +19,8 @@ import {
   unregisterQuickNoteShortcut,
 } from './quicknote';
 import type { CaptureTarget } from './quicknote';
+import { COMPANION_REQUEST_FILE, isValidCompanionCommand, parseCompanionUrl } from './companion';
+import type { CompanionCommand } from './companion';
 import { ControlAppData, ScheduleBlock, GoogleCalendarConfig, BlockingStrategy, PurposeSessionRequest, TaskItem, StudyMode, ObsidianConfig, Note, NoteFolder } from '../src/types';
 
 let mainWindow: BrowserWindow | null = null;
@@ -145,6 +147,40 @@ function startPurposeRequestWatcher() {
   // Polling is intentional here. It works whether Purpose launches a fresh
   // Control process or hands off to one that is already running.
   purposeRequestPoller = setInterval(notifyPurposeSessionIfPresent, 700);
+}
+
+function getCompanionCommand(): CompanionCommand | null {
+  try {
+    if (!fs.existsSync(COMPANION_REQUEST_FILE)) return null;
+    const parsed = JSON.parse(fs.readFileSync(COMPANION_REQUEST_FILE, 'utf-8'));
+    return isValidCompanionCommand(parsed) ? parsed : null;
+  } catch (error) {
+    console.warn('Unable to read Companion command:', error);
+    return null;
+  }
+}
+
+function acknowledgeCompanionCommand(id: string): boolean {
+  const command = getCompanionCommand();
+  if (!command || command.id !== id) return false;
+  try {
+    fs.unlinkSync(COMPANION_REQUEST_FILE);
+    return true;
+  } catch (error) {
+    console.warn('Unable to acknowledge Companion command:', error);
+    return false;
+  }
+}
+
+function notifyCompanionCommandIfPresent(): void {
+  const command = getCompanionCommand();
+  if (command) {
+    sendToRenderer('control:companionCommand', command);
+  }
+}
+
+function startCompanionRequestWatcher(): void {
+  setInterval(notifyCompanionCommandIfPresent, 700);
 }
 
 // The brand mark ships in two Icon Composer appearance variants. The renderer
@@ -909,6 +945,14 @@ function setupIpc() {
     return acknowledgePurposeSessionRequest(id);
   });
 
+  ipcMain.handle('control:getCompanionCommand', async () => {
+    return getCompanionCommand();
+  });
+
+  ipcMain.handle('control:acknowledgeCompanionCommand', async (_, id: string) => {
+    return acknowledgeCompanionCommand(id);
+  });
+
   ipcMain.handle('control:requestQuit', async () => {
     const isActive = currentTrayInfo && currentTrayInfo.isActive;
     if (isActive && mainWindow && !mainWindow.isDestroyed()) {
@@ -984,6 +1028,21 @@ function handleControlUrl(url: string): void {
   }
   if (parsed.protocol !== 'control:') return;
   const action = parsed.hostname || parsed.pathname.replace(/^\/+/, '');
+  if (action === 'companion') {
+    const command = parseCompanionUrl(url);
+    if (!command) return;
+    try {
+      fs.mkdirSync(path.dirname(COMPANION_REQUEST_FILE), { recursive: true });
+      const tmp = `${COMPANION_REQUEST_FILE}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(command));
+      fs.renameSync(tmp, COMPANION_REQUEST_FILE);
+    } catch (err) {
+      console.warn('Unable to write Companion command:', err);
+      return;
+    }
+    notifyCompanionCommandIfPresent();
+    return;
+  }
   if (action !== 'control' && action !== 'focus') return;
   const mode = (parsed.searchParams.get('mode') || '').trim();
   const task = (parsed.searchParams.get('task') || '').trim();
@@ -1038,6 +1097,7 @@ app.whenReady().then(() => {
   createMainWindow();
   createTray();
   startPurposeRequestWatcher();
+  startCompanionRequestWatcher();
   setupAutoUpdater();
   googleSync.start();
   autoExec.start();
