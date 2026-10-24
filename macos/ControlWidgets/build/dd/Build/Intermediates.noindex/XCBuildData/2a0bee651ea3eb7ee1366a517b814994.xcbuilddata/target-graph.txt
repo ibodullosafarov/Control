@@ -1,4 +1,0 @@
-Target dependency graph (2 targets)
-Target 'ControlWidgets' in project 'ControlWidgets'
-➜ Explicit dependency on target 'ControlWidgetsExtension' in project 'ControlWidgets'
-Target 'ControlWidgetsExtension' in project 'ControlWidgets' (no dependencies)

@@ -16,6 +16,27 @@ import type { ControlAppData, ActiveSessionState, ControlSession, ScheduleBlock 
 const STATE_DIR = path.join(os.homedir(), '.control-app');
 const STATE_FILE = path.join(STATE_DIR, 'widget-state.json');
 
+/**
+ * The widget extension is sandboxed (PlugInKit requires it), so inside the
+ * extension `NSHomeDirectory()` points at the app's *container* rather than the
+ * real home. The widget resolves the real home itself and reads the primary
+ * file from there (allowed by its home-relative sandbox exception), but we
+ * also mirror the snapshot into the extension's container so the widget keeps
+ * working even if that exception is unavailable.
+ *
+ * The container directory is only written to when macOS has already created
+ * it — creating it by hand would leave the container without the metadata the
+ * container manager expects.
+ */
+const WIDGET_CONTAINER_FILE = path.join(
+  os.homedir(),
+  'Library',
+  'Containers',
+  'com.control.widgets.ControlWidgets',
+  'Data',
+  'widget-state.json'
+);
+
 /** Bump whenever the shape below changes in a breaking way. */
 export const WIDGET_STATE_SCHEMA_VERSION = 1;
 
@@ -262,9 +283,24 @@ export function writeWidgetState(data: ControlAppData): boolean {
   try {
     if (!fs.existsSync(STATE_DIR)) fs.mkdirSync(STATE_DIR, { recursive: true });
     const state = buildWidgetState(data);
+    const contents = JSON.stringify(state, null, 2);
     const tmp = `${STATE_FILE}.tmp.${Date.now()}`;
-    fs.writeFileSync(tmp, JSON.stringify(state, null, 2), 'utf-8');
+    fs.writeFileSync(tmp, contents, 'utf-8');
     fs.renameSync(tmp, STATE_FILE);
+
+    // Mirror into the widget extension's sandbox container (only when macOS
+    // has already created it) so the widget has a second, sandbox-native
+    // source to read from.
+    try {
+      const containerDir = path.dirname(WIDGET_CONTAINER_FILE);
+      if (fs.existsSync(containerDir)) {
+        const containerTmp = `${WIDGET_CONTAINER_FILE}.tmp.${Date.now()}`;
+        fs.writeFileSync(containerTmp, contents, 'utf-8');
+        fs.renameSync(containerTmp, WIDGET_CONTAINER_FILE);
+      }
+    } catch (err) {
+      console.warn('Failed to mirror widget state into the widget container:', err);
+    }
     return true;
   } catch (err) {
     console.warn('Failed to write widget state:', err);

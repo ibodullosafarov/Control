@@ -57,6 +57,8 @@ function sanitizeNoteFolders(raw: unknown): NoteFolder[] {
       id: rec.id,
       name: rec.name.trim().slice(0, 80),
       ...(typeof rec.modeId === 'string' && rec.modeId ? { modeId: rec.modeId } : {}),
+      ...(typeof rec.color === 'string' && rec.color ? { color: rec.color } : {}),
+      ...(typeof rec.icon === 'string' && rec.icon ? { icon: rec.icon } : {}),
       createdAt: typeof rec.createdAt === 'string' ? rec.createdAt : new Date().toISOString(),
     });
   }

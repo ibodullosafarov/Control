@@ -18,9 +18,14 @@ private struct QuickStatsView: View {
     let entry: ControlEntry
 
     var body: some View {
-        let stats = entry.state?.stats ?? WidgetStats(
-            focusMinutesToday: 0, cyclesToday: 0, sessionsToday: 0, streakDays: 0
-        )
+        if let state = entry.state {
+            content(state.stats)
+        } else {
+            WidgetOfflineView()
+        }
+    }
+
+    private func content(_ stats: WidgetStats) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: "chart.bar.fill").font(.caption)

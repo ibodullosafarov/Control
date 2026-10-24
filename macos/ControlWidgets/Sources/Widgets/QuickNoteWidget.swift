@@ -19,6 +19,14 @@ private struct QuickNoteView: View {
     let entry: ControlEntry
 
     var body: some View {
+        if let state = entry.state {
+            content(state.note)
+        } else {
+            WidgetOfflineView()
+        }
+    }
+
+    private func content(_ note: WidgetNote?) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Image(systemName: "note.text").font(.caption)
@@ -27,7 +35,7 @@ private struct QuickNoteView: View {
             }
             .foregroundStyle(.secondary)
 
-            if let note = entry.state?.note, !note.text.isEmpty {
+            if let note, !note.text.isEmpty {
                 if let task = note.taskTitle, !task.isEmpty {
                     Text(task).font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
                 }

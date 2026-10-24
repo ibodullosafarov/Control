@@ -16,7 +16,7 @@ export function sanitizeModeFolders(raw: unknown): ModeFolder[] {
   const out: ModeFolder[] = [];
   for (const item of raw) {
     if (!item || typeof item !== 'object') continue;
-    const { id, name, createdAt } = item as Record<string, unknown>;
+    const { id, name, createdAt, color, icon } = item as Record<string, unknown>;
     if (typeof id !== 'string' || !id || typeof name !== 'string' || !name.trim()) continue;
     if (seen.has(id)) continue;
     seen.add(id);
@@ -24,6 +24,8 @@ export function sanitizeModeFolders(raw: unknown): ModeFolder[] {
       id,
       name: name.trim(),
       createdAt: typeof createdAt === 'string' ? createdAt : new Date().toISOString(),
+      ...(typeof color === 'string' && color ? { color } : {}),
+      ...(typeof icon === 'string' && icon ? { icon } : {}),
     });
   }
   return out;

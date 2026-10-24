@@ -17,7 +17,7 @@
     "package:mac": "npm run icons && npm run build && npm run widgets:build && electron-builder --mac --dir",
     "package:dmg": "npm run icons && npm run build && npm run widgets:build && electron-builder --mac dmg",
     "package": "npm run icons && npm run build && npm run widgets:build && electron-builder --mac",
-    "install:app": "npm run package:mac && rm -rf /Applications/Control.app && cp -R release/mac-arm64/Control.app /Applications/Control.app"
+    "install:app": "npm run package:mac && bash scripts/install-app.sh"
   },
   "build": {
     "appId": "com.control.studyapp",

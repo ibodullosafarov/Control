@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Plus, Trash2, Copy, Edit2, ArrowLeft, X, FolderPlus, Folder, ChevronDown, Pencil, Play } from 'lucide-react';
+import { Plus, Trash2, Copy, Edit2, ArrowLeft, X, FolderPlus, Folder, ChevronDown, Pencil, Play, Palette } from 'lucide-react';
 import { ModeFolder, StudyMode, ThemeId } from '../types';
 import { THEMES } from '../styles/themes';
 import { DynamicIcon } from './DynamicIcon';
@@ -9,6 +9,20 @@ import { DEFAULT_BLOCKLIST } from '../services/defaultData';
 import { isValidDomain } from '../services/domains';
 import { groupModesByFolder } from '../services/modeFolders';
 import { ModeViewToggle, useModeViewPref } from './ModeViewToggle';
+
+const FOLDER_COLORS = [
+  '#38bdf8',
+  '#10b981',
+  '#f59e0b',
+  '#8b5cf6',
+  '#f43f5e',
+  '#ec4899',
+  '#06b6d4',
+  '#84cc16',
+  '#64748b',
+];
+
+const FOLDER_ICONS = ['Folder', 'BookOpen', 'GraduationCap', 'Code', 'Brain', 'Target', 'Briefcase', 'Home', 'Heart', 'Zap'];
 
 interface ModesManagerProps {
   modes: StudyMode[];
@@ -60,6 +74,7 @@ const [editingMode, setEditingMode] = useState<StudyMode | null>(null);
   const [newFolderName, setNewFolderName] = useState('');
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
   const [view, setView] = useModeViewPref();
   const [draggingModeId, setDraggingModeId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
@@ -146,7 +161,7 @@ const [editingMode, setEditingMode] = useState<StudyMode | null>(null);
     if (!name) return;
     persistFolders([
       ...folders,
-      { id: `folder-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`, name, createdAt: new Date().toISOString() },
+      { id: `folder-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`, name, createdAt: new Date().toISOString(), color: '#38bdf8', icon: 'Folder' },
     ]);
     setNewFolderName('');
     setIsCreatingFolder(false);
@@ -159,6 +174,10 @@ const [editingMode, setEditingMode] = useState<StudyMode | null>(null);
       persistFolders(folders.map((f) => (f.id === renamingFolderId ? { ...f, name } : f)));
     }
     setRenamingFolderId(null);
+  };
+
+  const updateFolder = (folderId: string, updates: Partial<ModeFolder>) => {
+    persistFolders(folders.map((f) => (f.id === folderId ? { ...f, ...updates } : f)));
   };
 
   const handleDeleteFolder = (folderId: string) => {
@@ -565,7 +584,12 @@ const [editingMode, setEditingMode] = useState<StudyMode | null>(null);
                       style={{ color: currentTheme.textMuted }}
                     />
                     {group.folder ? (
-                      <Folder className="w-3.5 h-3.5 shrink-0" style={{ color: currentTheme.accent }} />
+                      <div
+                        className="p-1 rounded-lg"
+                        style={{ backgroundColor: `${group.folder.color || currentTheme.accent}1a`, color: group.folder.color || currentTheme.accent }}
+                      >
+                        <DynamicIcon name={group.folder.icon || 'Folder'} className="w-3.5 h-3.5" />
+                      </div>
                     ) : null}
                     {renamingFolderId === group.folder?.id ? (
                       <input
@@ -597,30 +621,38 @@ const [editingMode, setEditingMode] = useState<StudyMode | null>(null);
                       {group.modes.length}
                     </span>
                   </button>
-                  <span className="flex-1" />
-                  {group.folder && (
-                    <span className="flex items-center opacity-0 group-hover/header:opacity-100 control-within:opacity-100 transition-opacity">
-                      <button
-                        onClick={() => {
-                          setRenamingFolderId(group.folder!.id);
-                          setRenameValue(group.folder!.name);
-                        }}
-                        className="p-1.5 rounded-lg cursor-pointer"
-                        style={{ color: currentTheme.textMuted }}
-                        title="Rename folder"
-                      >
-                        <Pencil className="w-3 h-3" />
-                      </button>
-                      <button
-                        onClick={() => handleDeleteFolder(group.folder!.id)}
-                        className="p-1.5 rounded-lg hover:text-rose-500 cursor-pointer"
-                        style={{ color: currentTheme.textMuted }}
-                        title="Delete folder"
-                      >
-                        <Trash2 className="w-3 h-3" />
-                      </button>
-                    </span>
-                  )}
+                    <span className="flex-1" />
+                    {group.folder && (
+                      <span className="flex items-center opacity-0 group-hover/header:opacity-100 control-within:opacity-100 transition-opacity">
+                        <button
+                          onClick={() => setEditingFolderId(group.folder!.id)}
+                          className="p-1.5 rounded-lg cursor-pointer"
+                          style={{ color: currentTheme.textMuted }}
+                          title="Customize folder"
+                        >
+                          <Palette className="w-3 h-3" />
+                        </button>
+                        <button
+                          onClick={() => {
+                            setRenamingFolderId(group.folder!.id);
+                            setRenameValue(group.folder!.name);
+                          }}
+                          className="p-1.5 rounded-lg cursor-pointer"
+                          style={{ color: currentTheme.textMuted }}
+                          title="Rename folder"
+                        >
+                          <Pencil className="w-3 h-3" />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteFolder(group.folder!.id)}
+                          className="p-1.5 rounded-lg hover:text-rose-500 cursor-pointer"
+                          style={{ color: currentTheme.textMuted }}
+                          title="Delete folder"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </span>
+                    )}
                 </div>
               )}
               {!isCollapsed && (
@@ -648,6 +680,89 @@ const [editingMode, setEditingMode] = useState<StudyMode | null>(null);
           );
         })}
       </div>
+
+      {/* Folder Customize Modal */}
+      {editingFolderId && (() => {
+        const folder = folders.find((f) => f.id === editingFolderId);
+        if (!folder) return null;
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 select-none">
+            <div onClick={() => setEditingFolderId(null)} className="absolute inset-0 bg-transparent transition-opacity" />
+            <div
+              className="relative w-full max-w-md p-6 rounded-3xl border animate-modal-in shadow-2xl z-10 space-y-5"
+              style={{
+                backgroundColor: isDark ? '#0c0e16' : '#ffffff',
+                borderColor: isDark ? 'rgba(255, 255, 255, 0.16)' : 'rgba(0, 0, 0, 0.12)',
+              }}
+            >
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-bold tracking-tight" style={{ color: currentTheme.textPrimary }}>
+                  Customize Folder
+                </h2>
+                <button onClick={() => setEditingFolderId(null)} className="p-1.5 cursor-pointer" style={{ color: currentTheme.textSecondary }}>
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="flex items-center gap-3 p-3 rounded-2xl liquid-glass border">
+                <div
+                  className="p-2 rounded-xl"
+                  style={{ backgroundColor: `${folder.color || '#38bdf8'}1a`, color: folder.color || '#38bdf8' }}
+                >
+                  <DynamicIcon name={folder.icon || 'Folder'} className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="text-sm font-semibold" style={{ color: currentTheme.textPrimary }}>{folder.name}</div>
+                  <div className="text-xs" style={{ color: currentTheme.textSecondary }}>Preview</div>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-mono mb-2" style={{ color: currentTheme.textSecondary }}>Color</label>
+                <div className="flex flex-wrap gap-2">
+                  {FOLDER_COLORS.map((c) => (
+                    <button
+                      key={c}
+                      type="button"
+                      onClick={() => updateFolder(folder.id, { color: c })}
+                      className={`w-7 h-7 rounded-full border transition-all cursor-pointer ${folder.color === c ? 'scale-110 border-white ring-2 ring-white/40' : 'border-transparent opacity-70 hover:opacity-100'}`}
+                      style={{ backgroundColor: c }}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-mono mb-2" style={{ color: currentTheme.textSecondary }}>Icon</label>
+                <div className="flex flex-wrap gap-1.5">
+                  {FOLDER_ICONS.map((icon) => (
+                    <button
+                      key={icon}
+                      type="button"
+                      onClick={() => updateFolder(folder.id, { icon })}
+                      className={`p-2 rounded-xl border transition-all cursor-pointer ${folder.icon === icon ? 'ring-2' : 'opacity-70 hover:opacity-100'}`}
+                      style={{ borderColor: isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.12)', color: folder.icon === icon ? (folder.color || currentTheme.accent) : currentTheme.textSecondary }}
+                    >
+                      <DynamicIcon name={icon} className="w-4 h-4" />
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex justify-end pt-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingFolderId(null)}
+                  className="px-5 py-2 rounded-xl font-bold text-xs"
+                  style={{ backgroundColor: currentTheme.accent, color: currentTheme.accentText }}
+                >
+                  Done
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Mode Edit Modal */}
       {editingMode && (

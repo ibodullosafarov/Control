@@ -27,7 +27,7 @@ cd "$DIR"
 BUILD_DIR="$DIR/build"
 DERIVED="$BUILD_DIR/dd"
 PROJECT="ControlWidgets.xcodeproj"
-SCHEME="ControlWidgets"
+SCHEME="ControlWidgetsExtension"
 
 # Where electron-builder's extraResources pulls the appex from (staged copy).
 STAGE_DIR="$DIR/../../build/widgets"

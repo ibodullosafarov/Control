@@ -18,10 +18,14 @@ private struct FocusTimerView: View {
     let entry: ControlEntry
 
     var body: some View {
-        if let session = entry.state?.session, session.active {
-            activeSession(session)
+        if let state = entry.state {
+            if state.session.active {
+                activeSession(state.session)
+            } else {
+                idle(state.today.blocks)
+            }
         } else {
-            idle
+            WidgetOfflineView()
         }
     }
 
@@ -70,7 +74,7 @@ private struct FocusTimerView: View {
         }
     }
 
-    private var idle: some View {
+    private func idle(_ blocks: [WidgetBlock]) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Image(systemName: "timer").font(.caption)
@@ -78,7 +82,7 @@ private struct FocusTimerView: View {
             }
             .foregroundStyle(.secondary)
             Spacer(minLength: 0)
-            if let next = WidgetFormat.nextBlock(in: entry.state?.today.blocks ?? []) {
+            if let next = WidgetFormat.nextBlock(in: blocks) {
                 Text("Next").font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
                 Text(next.title).font(.caption).fontWeight(.semibold).lineLimit(2)
                 Text("\(WidgetFormat.clock(next.startTime)) – \(WidgetFormat.clock(next.endTime))")

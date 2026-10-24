@@ -20,6 +20,8 @@ export interface ModeFolder {
   id: string;
   name: string;
   createdAt: string;
+  color?: string;
+  icon?: string;
 }
 
 /** A quick-captured note. Origin is tracked so notes stay attributable. */
@@ -44,6 +46,8 @@ export interface NoteFolder {
   /** When set, quick notes captured in this mode file here automatically. */
   modeId?: string;
   createdAt: string;
+  color?: string;
+  icon?: string;
 }
 
 export interface StudyMode {

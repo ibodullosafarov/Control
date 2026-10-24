@@ -21,6 +21,11 @@ targets:
   # (com.apple.product-type.app-extension): on macOS 26 a hand-linked swiftc
   # appex lacks the entry-point/runloop setup Xcode's Widget Extension template
   # adds, so ExtensionFoundation traps and the widget never registers.
+  #
+  # There is deliberately NO separate "Control Widgets" host app — the .appex
+  # is embedded directly into Electron's Control.app (see scripts/embed-widget.js).
+  # Building a host app here would also register a phantom second app with
+  # LaunchServices on every build.
   ControlWidgetsExtension:
     type: app-extension
     platform: macOS
@@ -43,34 +48,3 @@ targets:
         CFBundleSupportedPlatforms: [MacOSX]
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
-
-  # Minimal host app: it exists to own/embed the extension and give the user a
-  # Reload Widgets button. Widgets work with it closed after one launch.
-  ControlWidgets:
-    type: application
-    platform: macOS
-    sources:
-      - Sources/Host
-      - Sources/Shared
-    dependencies:
-      - target: ControlWidgetsExtension
-        embed: true
-        codeSign: false
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.control.widgets
-        PRODUCT_NAME: Control Widgets
-        INFOPLIST_KEY_CFBundleDisplayName: Control Widgets
-        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
-        ASSETCATALOG_COMPILER_APPICON_NAME: ""
-    info:
-      path: Generated/App-Info.plist
-      properties:
-        CFBundleDisplayName: Control Widgets
-        CFBundleExecutable: Control Widgets
-        CFBundleIconFile: AppIcon
-        CFBundleName: Control Widgets
-        CFBundlePackageType: APPL
-        LSMinimumSystemVersion: "14.0"
-        NSHighResolutionCapable: true
-        NSPrincipalClass: NSApplication

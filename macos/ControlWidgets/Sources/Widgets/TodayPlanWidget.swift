@@ -18,9 +18,16 @@ private struct TodayPlanView: View {
     @Environment(\.widgetFamily) private var family
     let entry: ControlEntry
 
-    private var blocks: [WidgetBlock] { entry.state?.today.blocks ?? [] }
-
     var body: some View {
+        if let state = entry.state {
+            content(state.today.blocks)
+        } else {
+            WidgetOfflineView()
+        }
+    }
+
+    @ViewBuilder
+    private func content(_ blocks: [WidgetBlock]) -> some View {
         if blocks.isEmpty {
             VStack(spacing: 6) {
                 Image(systemName: "calendar").font(.title2).foregroundStyle(.secondary)
